@@ -112,6 +112,13 @@ class PromptConfig(BaseModel):
     # Expérimentation 4 : présente le mot ATTENDU en contraste des fautes connues,
     # plutôt que les fautes seules. Sans effet si show_error_examples est faux.
     contrastive_examples: bool = False
+    # two_stage uniquement : l'étape 1 (transcription) se fait en DEUX passes.
+    # Passe 1 : transcription à l'aveugle (sans référence) avec liste des mots incertains.
+    # Passe 2 : le modèle revoit l'image AVEC la référence et la passe 1, et vérifie mot
+    # à mot. Vise les deux erreurs de la passe 1 : faute de l'élève corrigée par erreur
+    # (sur-correction) et erreur de lecture prise pour une faute. La transcription de la
+    # passe 2 alimente l'étape de codage. Sans effet en end_to_end.
+    transcription_verification: bool = False
 
 
 class ExperimentConfig(BaseModel):

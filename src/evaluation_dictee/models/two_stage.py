@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, cast
 
 # Client instrumenté Langfuse (comme VLMScorer) : sans lui, les appels des deux étapes
@@ -27,9 +28,14 @@ from evaluation_dictee.models.vlm import (
 )
 from evaluation_dictee.pipeline.alignment import best_realignment, needs_realignment
 from evaluation_dictee.pipeline.prompts import (
+    PROMPT_TRANSCRIPTION_PASSE1,
+    PROMPT_TRANSCRIPTION_PASSE2,
     attach_image,
     build_text_coding_prompt,
+    build_transcription_passe1_prompt,
+    build_transcription_passe2_prompt,
     build_transcription_prompt,
+    fetch_prompt,
 )
 from evaluation_dictee.utils.logging import get_logger
 
@@ -41,6 +47,97 @@ _TRANSCRIPTION_SCHEMA: dict[str, Any] = {
     "properties": {"transcription": {"type": "string"}},
     "required": ["transcription"],
 }
+
+# Transcription en deux passes (option `transcription_verification`).
+_PASSE1_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "incertains": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "mot": {"type": "string"},
+                    "lettres_vues": {"type": "string"},
+                    "variantes": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["mot", "lettres_vues", "variantes"],
+            },
+        },
+        "transcription": {"type": "string"},
+    },
+    # `incertains` AVANT `transcription` : l'hésitation est décrite avant d'écrire le texte.
+    "required": ["incertains", "transcription"],
+}
+
+_PASSE2_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "verifications": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "reference": {"type": "string"},
+                    "passe1": {"type": "string"},
+                    "lettres_vues": {"type": "string"},
+                    "ecrit": {"type": "string"},
+                    "verdict": {
+                        "type": "string",
+                        "enum": ["conforme", "faute de l'élève", "mot oublié", "incertain"],
+                    },
+                    "correction_passe1": {"type": "boolean"},
+                },
+                "required": [
+                    "reference",
+                    "passe1",
+                    "lettres_vues",
+                    "ecrit",
+                    "verdict",
+                    "correction_passe1",
+                ],
+            },
+        },
+        "mots_ajoutes": {"type": "array", "items": {"type": "string"}},
+        "transcription": {"type": "string"},
+        "nb_incertains": {"type": "integer"},
+    },
+    "required": ["verifications", "mots_ajoutes", "transcription", "nb_incertains"],
+}
+
+
+def _parse_json_object(content: str) -> dict[str, Any] | None:
+    """Parse un objet JSON de réponse modèle (balises ``` tolérées) ; None si illisible.
+
+    Args:
+        content: Contenu textuel brut renvoyé par le modèle.
+
+    Returns:
+        L'objet JSON décodé, ou None si le contenu n'est pas un objet JSON valide.
+    """
+    cleaned = content.strip().removeprefix("```json").removeprefix("```")
+    cleaned = cleaned.removesuffix("```").strip()
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Repli : premier « { » au dernier « } » (texte parasite autour du JSON).
+        debut, fin = content.find("{"), content.rfind("}")
+        if debut < 0 or fin <= debut:
+            return None
+        try:
+            data = json.loads(content[debut : fin + 1])
+        except json.JSONDecodeError:
+            return None
+    return data if isinstance(data, dict) else None
+
+
+@dataclass
+class _ResultatPasse:
+    """Sortie parsée d'une passe de transcription."""
+
+    transcription: str
+    n_incertains: int | None = None
+    n_corrections: int | None = None
 
 
 def _request_kwargs(
@@ -220,6 +317,165 @@ class TwoStageScorer(Scorer):
             # Repli : réponse en texte brut prise telle quelle.
             return content.strip()
 
+    # ── Étape 1 en deux passes (option transcription_verification) ──────────
+    def _appel_image(
+        self,
+        copy: Copy,
+        messages_texte: list[Any],
+        image_url: str,
+        schema: dict[str, Any],
+        schema_name: str,
+        parse: Any,
+        label: str,
+        prompt_name: str,
+    ) -> tuple[_ResultatPasse | None, int]:
+        """Appelle le modèle d'étape 1 avec l'image, avec retry tant que `parse` échoue.
+
+        Args:
+            copy: Copie concernée (pour les logs).
+            messages_texte: Messages du prompt, sans image.
+            image_url: Image de la copie en data URL.
+            schema: Schéma JSON attendu (décodage contraint si activé).
+            schema_name: Nom du schéma transmis à l'API.
+            parse: Fonction contenu → `_ResultatPasse | None`.
+            label: Nom de la passe, pour les logs.
+            prompt_name: Nom du prompt Langfuse, pour lier la génération à sa version.
+
+        Returns:
+            Couple (résultat parsé ou None, nombre de tentatives).
+        """
+        messages = cast("list[ChatCompletionMessageParam]", attach_image(messages_texte, image_url))
+        request_kwargs = _request_kwargs(self.model_config, schema, schema_name)
+        # Lie la génération à la version du prompt dans Langfuse (rien si repli local).
+        prompt_ref = fetch_prompt(prompt_name)
+        if prompt_ref is not None:
+            request_kwargs["langfuse_prompt"] = prompt_ref
+        n_essais = self.model_config.max_retries + 1
+        for attempt in range(n_essais):
+            temp = self.model_config.temperature + (0.3 if attempt > 0 else 0.0)
+            response = self.client.chat.completions.create(
+                model=self.model_config.name,
+                temperature=temp,
+                max_tokens=self.model_config.max_tokens,
+                messages=messages,
+                **request_kwargs,
+            )
+            log_if_truncated(response, copy.copy_id, self.model_config.max_tokens)
+            resultat = parse(response.choices[0].message.content or "")
+            if resultat is not None and resultat.transcription.strip():
+                return resultat, attempt + 1
+            logger.warning(
+                "%s : réponse inexploitable à l'essai %d/%d pour %s.",
+                label,
+                attempt + 1,
+                n_essais,
+                copy.copy_id,
+            )
+        return None, n_essais
+
+    @staticmethod
+    def _parse_passe1(content: str) -> _ResultatPasse | None:
+        """Parse la réponse de la passe 1 (transcription à l'aveugle + incertains).
+
+        Args:
+            content: Contenu textuel brut renvoyé par le modèle.
+
+        Returns:
+            Le résultat parsé ; repli sur le texte brut si le JSON est illisible.
+        """
+        data = _parse_json_object(content)
+        if data is None:
+            # Même repli que l'étape 1 historique : texte brut pris tel quel.
+            return _ResultatPasse(transcription=content.strip()) if content.strip() else None
+        incertains = data.get("incertains")
+        return _ResultatPasse(
+            transcription=str(data.get("transcription", "")).strip(),
+            n_incertains=len(incertains) if isinstance(incertains, list) else None,
+        )
+
+    @staticmethod
+    def _parse_passe2(content: str) -> _ResultatPasse | None:
+        """Parse la réponse de la passe 2 (vérification mot à mot avec la référence).
+
+        Pas de repli texte brut : un texte libre en passe 2 n'est pas une transcription
+        vérifiée, on préfère alors garder la passe 1.
+
+        Args:
+            content: Contenu textuel brut renvoyé par le modèle.
+
+        Returns:
+            Le résultat parsé, ou None si le JSON est illisible.
+        """
+        data = _parse_json_object(content)
+        if data is None:
+            return None
+        verifications = data.get("verifications")
+        n_corrections = None
+        if isinstance(verifications, list):
+            n_corrections = sum(
+                1 for v in verifications if isinstance(v, dict) and v.get("correction_passe1")
+            )
+        nb_incertains = data.get("nb_incertains")
+        return _ResultatPasse(
+            transcription=str(data.get("transcription", "")).strip(),
+            n_incertains=nb_incertains if isinstance(nb_incertains, int) else None,
+            n_corrections=n_corrections,
+        )
+
+    def _transcribe_deux_passes(
+        self, copy: Copy, reference_text: str
+    ) -> tuple[str, int, _ResultatPasse | None, _ResultatPasse | None]:
+        """Transcription en deux passes : aveugle, puis vérifiée avec la référence.
+
+        Si la passe 2 échoue, on garde la passe 1 (la copie reste codable).
+
+        Args:
+            copy: Copie dont l'image est à transcrire.
+            reference_text: Texte de référence de la dictée.
+
+        Returns:
+            (transcription retenue, nb total de tentatives, résultat passe 1, résultat
+            passe 2) ; transcription vide si la passe 1 a échoué.
+        """
+        image_url = _image_to_data_url(load_image(copy.image_path))
+        read_final = self.prompt_config.read_final_state
+        passe1, n1 = self._appel_image(
+            copy,
+            build_transcription_passe1_prompt(read_final_state=read_final),
+            image_url,
+            _PASSE1_SCHEMA,
+            "transcription_passe1",
+            self._parse_passe1,
+            "Passe 1 (transcription aveugle)",
+            PROMPT_TRANSCRIPTION_PASSE1,
+        )
+        if passe1 is None:
+            return "", n1, None, None
+        if not reference_text.strip():
+            logger.warning("Pas de texte de référence pour %s : passe 2 sautée.", copy.copy_id)
+            return passe1.transcription, n1, passe1, None
+        passe2, n2 = self._appel_image(
+            copy,
+            build_transcription_passe2_prompt(
+                reference_text=reference_text,
+                transcription_passe1=passe1.transcription,
+                read_final_state=read_final,
+            ),
+            image_url,
+            _PASSE2_SCHEMA,
+            "transcription_passe2",
+            self._parse_passe2,
+            "Passe 2 (vérification)",
+            PROMPT_TRANSCRIPTION_PASSE2,
+        )
+        if passe2 is None:
+            logger.warning(
+                "Passe 2 en échec pour %s : on garde la transcription de la passe 1.",
+                copy.copy_id,
+            )
+            return passe1.transcription, n1 + n2, passe1, None
+        return passe2.transcription, n1 + n2, passe1, passe2
+
     # ── Étape 2 : codage du texte transcrit ──────────────────────────────────
     def _code_text(self, copy: Copy, reference_text: str, transcription: str) -> CopyPrediction:
         """Code chaque item à partir de la transcription (sans image).
@@ -348,7 +604,14 @@ class TwoStageScorer(Scorer):
             aucune transcription. La transcription brute est conservée dans
             `raw_transcription`.
         """
-        transcription, n_attempts = self._transcribe(copy)
+        passe1: _ResultatPasse | None = None
+        passe2: _ResultatPasse | None = None
+        if self.prompt_config.transcription_verification:
+            transcription, n_attempts, passe1, passe2 = self._transcribe_deux_passes(
+                copy, reference_text or ""
+            )
+        else:
+            transcription, n_attempts = self._transcribe(copy)
 
         if not transcription.strip():
             items_vides = [
@@ -365,4 +628,10 @@ class TwoStageScorer(Scorer):
         prediction = self._code_text(copy, reference_text or "", transcription)
         prediction.n_attempts = n_attempts
         prediction.raw_transcription = transcription
+        if passe1 is not None:
+            prediction.transcription_passe1 = passe1.transcription
+            prediction.n_incertains_passe1 = passe1.n_incertains
+        if passe2 is not None:
+            prediction.n_corrections_passe2 = passe2.n_corrections
+            prediction.n_incertains_passe2 = passe2.n_incertains
         return prediction

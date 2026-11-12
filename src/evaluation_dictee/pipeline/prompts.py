@@ -20,6 +20,9 @@ from evaluation_dictee.data.grid import GridItem
 PROMPT_DICTATION = "Dictation"
 PROMPT_TRANSCRIPTION = "Transcription"
 PROMPT_TEXT_CODING = "Text coding"
+# Transcription en deux passes (option `transcription_verification`).
+PROMPT_TRANSCRIPTION_PASSE1 = "Transcription pass 1"
+PROMPT_TRANSCRIPTION_PASSE2 = "Transcription pass 2 verification"
 
 _GRILLE_SIMPLIFIEE = (
     "Pour chaque item, attribue un code :\n"
@@ -308,11 +311,125 @@ _TEMPLATE_TEXT_CODING: list[ChatMessageDict] = [
     },
 ]
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Transcription en deux passes (option `transcription_verification`).
+# Passe 1 : lecture à l'aveugle, mots incertains signalés.
+# Passe 2 : vérification mot à mot avec la référence ; l'IMAGE reste la seule autorité.
+# {{consigne_ratures}} reçoit la MÊME valeur dans les deux passes, sinon la passe 2
+# réécrit les ratures autrement que la passe 1.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_TEMPLATE_TRANSCRIPTION_PASSE1: list[ChatMessageDict] = [
+    {
+        "role": "system",
+        "content": (
+            "Tu es un expert en lecture d'écriture manuscrite d'enfants.\n"
+            "On te montre l'image manuscrite de la dictée d'un élève de primaire.\n\n"
+            "Règles à respecter impérativement :\n"
+            "1 - Transcris EXACTEMENT le texte écrit par l'élève, FAUTES D'ORTHOGRAPHE "
+            "COMPRISES.\n"
+            "2 - Ne corrige rien, ne complète rien, ne réordonne rien. Ne devine pas le "
+            "texte attendu : si un mot est mal écrit, recopie-le mal écrit.\n"
+            "3 - Reproduis fidèlement les erreurs, y compris les accents manquants ou en "
+            "trop, les lettres manquantes ou en trop, les majuscules et la ponctuation.\n"
+            "4 - Respecte l'ordre exact des éléments écrits sur la copie (mots, "
+            "ponctuation, chiffres, tirets de dialogue...).\n"
+            "5 - Lis lettre par lettre, pas mot par mot. Regarde en particulier la fin de "
+            "chaque mot (s, x, e, es, é, er, ez, ait, aient, nt), les accents, les "
+            "cédilles et les apostrophes.\n"
+            "6 - Respecte les retours à la ligne de la copie, en les écrivant \\n dans "
+            "le JSON.\n"
+            "7 - Si tu hésites sur un mot, écris dans la transcription la lecture la plus "
+            'probable suivie de [?], et décris ton hésitation dans "incertains".\n'
+            "{{consigne_ratures}}"
+        ),
+    },
+    {
+        "role": "user",
+        "content": (
+            "Réponds UNIQUEMENT par un objet JSON, sans texte autour, de la forme :\n"
+            "{\n"
+            '  "incertains": [\n'
+            '    {"mot": "lecture retenue", "lettres_vues": "description lettre par '
+            'lettre de ce qui est écrit", "variantes": ["autre lecture possible"]}\n'
+            "  ],\n"
+            '  "transcription": "le texte exact écrit par l\'élève"\n'
+            "}\n"
+            'Si aucun mot n\'est incertain, "incertains" est une liste vide.'
+        ),
+    },
+]
+
+_TEMPLATE_TRANSCRIPTION_PASSE2: list[ChatMessageDict] = [
+    {
+        "role": "system",
+        "content": (
+            "Tu es un expert en lecture d'écriture manuscrite d'enfants.\n"
+            "On te montre l'image manuscrite de la dictée d'un élève de primaire, le "
+            "texte de référence de la dictée et une première transcription faite sans "
+            "connaître ce texte.\n\n"
+            "L'IMAGE est la seule autorité. Le texte de référence sert uniquement à "
+            "savoir quel mot l'élève essayait d'écrire. Il ne dit pas ce que l'élève a "
+            "écrit.\n"
+            "La première transcription peut contenir deux sortes d'erreurs :\n"
+            "(a) une faute de l'élève corrigée par erreur, parce qu'un mot mal écrit a "
+            "été lu comme le mot correct ;\n"
+            "(b) une erreur de lecture prise pour une faute.\n\n"
+            "Règles à respecter impérativement :\n"
+            "1 - Pour CHAQUE mot du texte de référence, y compris ceux qui sont "
+            "identiques dans la première transcription, retrouve le mot sur l'image et "
+            "décris lettre par lettre ce qui est écrit.\n"
+            "2 - Sois particulièrement attentif aux pièges de la dictée : accords (s, e, "
+            "es, x), participes passés et infinitifs (é, és, ée, er, ez), terminaisons "
+            "verbales (ait, aient, ent, ont), homophones (a/à, ce/se, ces/ses, on/ont, "
+            "leur/leurs, et/est), accents, cédilles, apostrophes, majuscules.\n"
+            "3 - Repère aussi les mots oubliés par l'élève et les mots qu'il a ajoutés.\n"
+            "4 - Ne corrige jamais l'élève : la transcription finale reproduit ce qui est "
+            "écrit, fautes comprises.\n"
+            "5 - Respecte les retours à la ligne de la copie, en les écrivant \\n dans "
+            "le JSON.\n"
+            "{{consigne_ratures}}"
+        ),
+    },
+    {
+        "role": "user",
+        "content": (
+            "TEXTE DE RÉFÉRENCE :\n"
+            "{{texte_reference}}\n\n"
+            "PREMIÈRE TRANSCRIPTION :\n"
+            "{{transcription_passe1}}\n\n"
+            "Réponds UNIQUEMENT par un objet JSON, sans texte autour, de la forme :\n"
+            "{\n"
+            '  "verifications": [\n'
+            "    {\n"
+            '      "reference": "mot du texte de référence",\n'
+            '      "passe1": "mot dans la première transcription",\n'
+            '      "lettres_vues": "description lettre par lettre de ce qui est écrit '
+            "sur l'image\",\n"
+            '      "ecrit": "ce que l\'élève a réellement écrit",\n'
+            '      "verdict": "conforme | faute de l\'élève | mot oublié | incertain",\n'
+            '      "correction_passe1": true\n'
+            "    }\n"
+            "  ],\n"
+            '  "mots_ajoutes": ["mots écrits par l\'élève qui ne sont pas dans la '
+            'référence"],\n'
+            '  "transcription": "le texte exact écrit par l\'élève",\n'
+            '  "nb_incertains": 0\n'
+            "}\n"
+            '"verifications" contient une entrée par mot du texte de référence, dans '
+            "l'ordre.\n"
+            '"correction_passe1" vaut true si "ecrit" diffère de "passe1", false sinon.'
+        ),
+    },
+]
+
 # Registre exposé pour l'initialisation Langfuse (utils/add_langfuse_prompt.py).
 PROMPT_TEMPLATES: dict[str, list[ChatMessageDict]] = {
     PROMPT_DICTATION: _TEMPLATE_DICTATION,
     PROMPT_TRANSCRIPTION: _TEMPLATE_TRANSCRIPTION,
     PROMPT_TEXT_CODING: _TEMPLATE_TEXT_CODING,
+    PROMPT_TRANSCRIPTION_PASSE1: _TEMPLATE_TRANSCRIPTION_PASSE1,
+    PROMPT_TRANSCRIPTION_PASSE2: _TEMPLATE_TRANSCRIPTION_PASSE2,
 }
 
 
@@ -609,6 +726,62 @@ def build_transcription_prompt(read_final_state: bool = True) -> list[ChatMessag
         PROMPT_TRANSCRIPTION,
         fallback=_TEMPLATE_TRANSCRIPTION,
         variables={"consigne_ratures": consigne_ratures},
+    )
+
+
+def _consigne_ratures_deux_passes(read_final_state: bool) -> str:
+    """Consigne « ratures » commune aux deux passes (identique, sinon la passe 2 réécrit).
+
+    Args:
+        read_final_state: si True, consigne de ne lire que l'état final (décision DEPP).
+
+    Returns:
+        Le bloc à injecter dans `{{consigne_ratures}}`, vide si l'option est inactive.
+    """
+    # Non numérotée : les deux passes n'ont pas le même nombre de règles, or la
+    # consigne doit être strictement identique dans les deux.
+    return ("Ratures : " + _CONSIGNE_RATURES_TRANSCRIPTION) if read_final_state else ""
+
+
+def build_transcription_passe1_prompt(read_final_state: bool = True) -> list[ChatMessageDict]:
+    """Prompt PASSE 1 de la transcription en deux passes : lecture à l'aveugle (sans référence).
+
+    Args:
+        read_final_state: si True, ajoute la consigne de ne lire que l'état final (ratures).
+
+    Returns:
+        Les messages du prompt compilés, prêts à recevoir l'image.
+    """
+    return _compile_prompt(
+        PROMPT_TRANSCRIPTION_PASSE1,
+        fallback=_TEMPLATE_TRANSCRIPTION_PASSE1,
+        variables={"consigne_ratures": _consigne_ratures_deux_passes(read_final_state)},
+    )
+
+
+def build_transcription_passe2_prompt(
+    reference_text: str,
+    transcription_passe1: str,
+    read_final_state: bool = True,
+) -> list[ChatMessageDict]:
+    """Prompt PASSE 2 : vérification de la passe 1 avec la référence (l'image fait foi).
+
+    Args:
+        reference_text: texte de référence de la dictée.
+        transcription_passe1: transcription produite à l'aveugle en passe 1.
+        read_final_state: si True, même consigne « ratures » qu'en passe 1.
+
+    Returns:
+        Les messages du prompt compilés, prêts à recevoir l'image.
+    """
+    return _compile_prompt(
+        PROMPT_TRANSCRIPTION_PASSE2,
+        fallback=_TEMPLATE_TRANSCRIPTION_PASSE2,
+        variables={
+            "consigne_ratures": _consigne_ratures_deux_passes(read_final_state),
+            "texte_reference": reference_text,
+            "transcription_passe1": transcription_passe1,
+        },
     )
 
 

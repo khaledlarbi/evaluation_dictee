@@ -58,6 +58,7 @@ def _run_metadata(config: ExperimentConfig) -> dict[str, str]:
         "enforce_count": str(config.prompt.enforce_count).lower(),
         "check_neighbours": str(config.prompt.check_neighbours).lower(),
         "show_error_examples": str(config.prompt.show_error_examples).lower(),
+        "transcription_verification": str(config.prompt.transcription_verification).lower(),
         "structured_output": str(config.model.structured_output).lower(),
         "max_tokens": str(config.model.max_tokens),
     }
@@ -88,6 +89,7 @@ def _run_tags(config: ExperimentConfig) -> list[str]:
         (config.prompt.enforce_count, "coherence-comptage"),
         (config.prompt.check_neighbours, "voisinage"),
         (config.prompt.show_error_examples, "exemples-fautes"),
+        (config.prompt.transcription_verification, "transcription-2-passes"),
     ]:
         if actif:
             tags.append(tag)

@@ -349,6 +349,12 @@ def run_benchmark(
                         # code : une CoT écrite après est décorative (cf. D7).
                         "comparaison_avant_code": (pred.comparaison_avant_code if pred else None),
                         "raw_transcription": prediction.raw_transcription,
+                        # Transcription en deux passes (option transcription_verification) :
+                        # None sinon. Permet de mesurer l'apport de la passe 2.
+                        "transcription_passe1": prediction.transcription_passe1,
+                        "n_corrections_passe2": prediction.n_corrections_passe2,
+                        "n_incertains_passe1": prediction.n_incertains_passe1,
+                        "n_incertains_passe2": prediction.n_incertains_passe2,
                         "approach": config.approach,
                         "model": model_name,
                         "model_stage2": model_stage2_name,

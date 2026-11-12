@@ -5,10 +5,14 @@ La logique conditionnelle (schéma, flags) reste dans le code : un seul prompt
 versionné par fonction, pas une version par combinaison de flags.
 
 Usage :
-    uv run add-langfuse-prompt
+    uv run add-langfuse-prompt                                  # tous les prompts
+    uv run add-langfuse-prompt "Transcription pass 1" "..."      # seulement ceux-là
 """
 
 from __future__ import annotations
+
+import sys
+from collections.abc import Sequence
 
 from langfuse import get_client
 
@@ -18,11 +22,23 @@ from evaluation_dictee.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def push_prompts() -> None:
-    """Crée/met à jour chaque template dans Langfuse et le promeut en production."""
+def push_prompts(names: Sequence[str] | None = None) -> None:
+    """Crée/met à jour les templates dans Langfuse et les promeut en production.
+
+    Args:
+        names: Noms des prompts à pousser ; tous si None ou vide (par défaut, lus sur
+            la ligne de commande). Évite de recréer une version des prompts inchangés.
+    """
+    if names is None:
+        names = sys.argv[1:]
+    inconnus = [n for n in names if n not in PROMPT_TEMPLATES]
+    if inconnus:
+        raise SystemExit(f"Prompts inconnus : {inconnus}. Connus : {list(PROMPT_TEMPLATES)}")
     langfuse = get_client()
 
     for name, messages in PROMPT_TEMPLATES.items():
+        if names and name not in names:
+            continue
         prompt = langfuse.create_prompt(
             name=name,
             type="chat",

@@ -41,6 +41,15 @@ class CopyPrediction:
     n_attempts: int = 1
     # Transcription brute de l'étape 1 (two_stage) ; None en end_to_end.
     raw_transcription: str | None = None
+    # Transcription en deux passes (option transcription_verification) : passe 1 à
+    # l'aveugle, puis `raw_transcription` = passe 2 vérifiée avec la référence.
+    transcription_passe1: str | None = None
+    # Nombre de mots de la référence pour lesquels la passe 2 corrige la passe 1.
+    n_corrections_passe2: int | None = None
+    # Nombre de mots jugés incertains (passe 1 : longueur de "incertains" ; passe 2 :
+    # "nb_incertains" déclaré).
+    n_incertains_passe1: int | None = None
+    n_incertains_passe2: int | None = None
     # Raisonnement natif du modèle (champ `reasoning_content` de l'API), quand le mode
     # thinking est actif. C'est du niveau COPIE, pas de l'item : le modèle produit un
     # seul bloc pour les 83 items. Stocké à part (`<run>_reasoning.jsonl`) et jamais

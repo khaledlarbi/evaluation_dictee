@@ -147,3 +147,112 @@ def test_modele_stage2_distinct(monkeypatch) -> None:
 def test_parse_transcription_repli_texte_brut() -> None:
     # Si le modèle répond en texte brut (pas de JSON), on récupère quand même
     assert TwoStageScorer._parse_transcription("Le soir tombait") == "Le soir tombait"
+
+
+# ── Transcription en deux passes (option transcription_verification) ─────────
+
+
+def _make_scorer_deux_passes(reponses: list[str], monkeypatch) -> TwoStageScorer:
+    scorer = _make_scorer(reponses, monkeypatch)
+    scorer.prompt_config = PromptConfig(transcription_verification=True)
+    return scorer
+
+
+_CODAGE_OK = json.dumps(
+    {
+        "items": [
+            {"item_id": "i1", "transcription": "Le", "code": "1"},
+            {"item_id": "i2", "transcription": "soire", "code": "9"},
+            {"item_id": "i3", "transcription": "tombait", "code": "1"},
+        ]
+    }
+)
+
+
+def _passe2(transcription: str) -> str:
+    return json.dumps(
+        {
+            "verifications": [
+                {
+                    "reference": "soir",
+                    "passe1": "soir",
+                    "lettres_vues": "s-o-i-r-e",
+                    "ecrit": "soire",
+                    "verdict": "faute de l'élève",
+                    "correction_passe1": True,
+                },
+                {
+                    "reference": "Le",
+                    "passe1": "Le",
+                    "lettres_vues": "L-e",
+                    "ecrit": "Le",
+                    "verdict": "conforme",
+                    "correction_passe1": False,
+                },
+            ],
+            "mots_ajoutes": [],
+            "transcription": transcription,
+            "nb_incertains": 0,
+        }
+    )
+
+
+def test_deux_passes_nominal(monkeypatch) -> None:
+    passe1 = json.dumps(
+        {
+            "incertains": [{"mot": "soir", "lettres_vues": "s-o-i-r-?", "variantes": ["soire"]}],
+            "transcription": "Le soir[?] tombait",
+        }
+    )
+    scorer = _make_scorer_deux_passes(
+        [passe1, _passe2("Le soire tombait"), _CODAGE_OK], monkeypatch
+    )
+    pred = scorer.score_copy(_copy(), "Le soir tombait")
+
+    appels = scorer.client.appels
+    assert len(appels) == 3
+    # Passe 1 à l'aveugle : la référence n'apparaît nulle part dans le prompt.
+    texte_p1 = json.dumps(appels[0]["messages"], ensure_ascii=False)
+    assert "TEXTE DE RÉFÉRENCE" not in texte_p1
+    # Passe 2 : image + référence + transcription de la passe 1.
+    user_p2 = appels[1]["messages"][-1]["content"]
+    assert user_p2[1]["type"] == "image_url"
+    assert "Le soir tombait" in user_p2[0]["text"]
+    assert "Le soir[?] tombait" in user_p2[0]["text"]
+    # Le codage part de la transcription vérifiée.
+    assert "Le soire tombait" in json.dumps(appels[2]["messages"], ensure_ascii=False)
+
+    assert pred.raw_transcription == "Le soire tombait"
+    assert pred.transcription_passe1 == "Le soir[?] tombait"
+    assert pred.n_corrections_passe2 == 1
+    assert pred.n_incertains_passe1 == 1
+    assert pred.n_incertains_passe2 == 0
+    assert pred.n_attempts == 2
+
+
+def test_deux_passes_echec_passe2_garde_passe1(monkeypatch) -> None:
+    passe1 = json.dumps({"incertains": [], "transcription": "Le soire tombait"})
+    # max_retries=1 → deux essais de passe 2, tous deux illisibles.
+    scorer = _make_scorer_deux_passes(
+        [passe1, "pas du json", "toujours pas", _CODAGE_OK], monkeypatch
+    )
+    pred = scorer.score_copy(_copy(), "Le soir tombait")
+    assert pred.raw_transcription == "Le soire tombait"
+    assert pred.transcription_passe1 == "Le soire tombait"
+    assert pred.n_corrections_passe2 is None
+    assert pred.n_attempts == 3
+
+
+def test_consigne_ratures_identique_dans_les_deux_passes() -> None:
+    from evaluation_dictee.pipeline.prompts import (
+        _consigne_ratures_deux_passes,
+        build_transcription_passe1_prompt,
+        build_transcription_passe2_prompt,
+    )
+
+    consigne = _consigne_ratures_deux_passes(True)
+    assert consigne
+    p1 = build_transcription_passe1_prompt(read_final_state=True)[0]["content"]
+    p2 = build_transcription_passe2_prompt("ref", "p1", read_final_state=True)[0]["content"]
+    assert consigne in p1 and consigne in p2
+    assert "{{" not in p1 + p2
