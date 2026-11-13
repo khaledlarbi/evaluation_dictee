@@ -66,4 +66,6 @@ font alors plus que quelques pixels. C'est une hypothèse, non vérifiée.
 |---|---|---|---|---|---|
 | qwen3-6-35b-moe seul | 87,3 % | 0,650 | 0,600 | 28,0 % | −2,0 pt |
 | gemma4-26b-moe seul | 84,5 % | 0,629 | 0,445 | 12,6 % | +5,1 pt |
+| qwen3-8-27b seul (codage qwen3-6-35b-moe) | 88,2 % | 0,687 | 0,571 | 20,8 % | +0,5 pt |
 | Vote à trois (qwen, gemma, qwen à T = 0,7) | 89,1 % | 0,703 | 0,611 | 22,6 % | −1,3 pt |
+| **Vote à trois (qwen3-6-35b-moe, gemma, qwen3-8-27b)** | **89,8 %** | **0,728** | 0,591 | **17,1 %** | **+0,0 pt** |
