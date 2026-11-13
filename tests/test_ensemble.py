@@ -39,3 +39,17 @@ def test_charger_et_combiner(tmp_path) -> None:
     assert c.cles == [("c", "i1"), ("c", "i2")]  # i3 exclu (copie vierge)
     assert c.concordants == [True, False]
     assert c.predire("erreur_prioritaire") == ["1", "9"]
+
+
+def test_arbitrage_par_troisieme_lecture() -> None:
+    from evaluation_dictee.evaluation.ensemble import Combinaison
+
+    c = Combinaison(
+        cles=[("c", f"i{k}") for k in range(4)],
+        y_true=["1", "9", "9", "0"],
+        pred_a=["1", "1", "9", "0"],
+        pred_b=["1", "9", "1", "9"],
+        pred_c=["9", "9", "9", "1"],
+    )
+    # i0 : A = B → C ignoré ; i1, i2 : C départage ; i3 : tous différents → indécis.
+    assert c.arbitrer() == ["1", "9", "9", None]

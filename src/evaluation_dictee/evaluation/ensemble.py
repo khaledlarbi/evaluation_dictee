@@ -83,6 +83,8 @@ class Combinaison:
     y_true: list[str]
     pred_a: list[str]
     pred_b: list[str]
+    # Troisième lecture optionnelle, consultée seulement là où A et B divergent.
+    pred_c: list[str] | None = None
 
     @property
     def concordants(self) -> list[bool]:
@@ -93,24 +95,51 @@ class Combinaison:
         """Codes combinés de tous les items selon la politique."""
         return [decider(a, b, politique) for a, b in zip(self.pred_a, self.pred_b, strict=True)]
 
+    def arbitrer(self) -> list[str | None]:
+        """Vote à trois : code majoritaire, ou None si A, B et C sont tous différents.
+
+        Là où A et B concordent, C n'est pas consulté (il ne peut que confirmer ou
+        être mis en minorité). Là où ils divergent, C départage s'il rejoint l'un
+        des deux ; sinon l'item reste indécidé (à renvoyer à un humain).
+
+        Returns:
+            Le code retenu par item, None pour les items indécidés.
+
+        Raises:
+            ValueError: si aucune troisième lecture n'est disponible.
+        """
+        if self.pred_c is None:
+            raise ValueError("Arbitrage impossible sans troisième lecture (pred_c).")
+        out: list[str | None] = []
+        for a, b, c in zip(self.pred_a, self.pred_b, self.pred_c, strict=True):
+            out.append(a if a == b or c == a else b if c == b else None)
+        return out
+
 
 def combiner(
     codes_a: dict[tuple[str, str], tuple[str, str]],
     codes_b: dict[tuple[str, str], tuple[str, str]],
+    codes_c: dict[tuple[str, str], tuple[str, str]] | None = None,
 ) -> Combinaison:
-    """Aligne deux runs sur leurs items communs (même copie, même item).
+    """Aligne deux (ou trois) runs sur leurs items communs (même copie, même item).
 
     Args:
         codes_a: sortie de `charger_codes` pour le run A.
         codes_b: sortie de `charger_codes` pour le run B.
+        codes_c: troisième lecture optionnelle, qui sert d'arbitre.
 
     Returns:
-        Les items communs, triés, avec les codes expert et les deux prédictions.
+        Les items communs à tous les runs fournis, triés, avec les codes expert et
+        les prédictions.
     """
-    cles = sorted(set(codes_a) & set(codes_b))
+    communs = set(codes_a) & set(codes_b)
+    if codes_c is not None:
+        communs &= set(codes_c)
+    cles = sorted(communs)
     return Combinaison(
         cles=cles,
         y_true=[codes_a[c][0] for c in cles],
         pred_a=[codes_a[c][1] for c in cles],
         pred_b=[codes_b[c][1] for c in cles],
+        pred_c=[codes_c[c][1] for c in cles] if codes_c is not None else None,
     )
