@@ -234,3 +234,26 @@ def test_prompt_passe1_ronds_sur_i_et_majuscule_apres_point() -> None:
     systeme = build_transcription_passe1_prompt()[0]["content"]
     assert "rond au lieu du point sur le i" in systeme
     assert "Après chaque point" in systeme
+
+
+def test_passe1_tronquee_relancee(monkeypatch) -> None:
+    """Une passe 1 coupée par max_tokens est relancée, jamais prise comme texte brut."""
+    scorer = _make_scorer_deux_passes([], monkeypatch)
+    reponses = ['{"incertains": [], "transcription": "Le Le Le Le', _passe1("Le soir tombait")]
+    fins = ["length", "stop"]
+    appels: list[dict] = []
+
+    def _create(**kwargs):  # noqa: ANN003
+        appels.append(kwargs)
+        msg = SimpleNamespace(content=reponses.pop(0), model_extra={})
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=msg, finish_reason=fins.pop(0))],
+            usage=SimpleNamespace(completion_tokens=100),
+        )
+
+    scorer.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=_create))
+    )
+    transcription, n, passe1, _ = scorer._transcribe_et_aligner(_copy())
+    assert transcription == "Le soir tombait"
+    assert n == 2

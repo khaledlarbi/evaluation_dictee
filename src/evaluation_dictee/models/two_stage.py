@@ -329,8 +329,11 @@ class TwoStageScorer(Scorer):
                 messages=messages,
                 **request_kwargs,
             )
-            log_if_truncated(response, copy.copy_id, cfg.max_tokens)
-            resultat = parse(response.choices[0].message.content or "")
+            # Une génération tronquée n'est jamais acceptée : le repli « texte brut » de la
+            # passe 1 prenait sinon 16 000 tokens de JSON coupé (boucle du modèle) pour une
+            # transcription, et faussait les 83 items de la copie (13/11/2026).
+            tronquee = log_if_truncated(response, copy.copy_id, cfg.max_tokens)
+            resultat = None if tronquee else parse(response.choices[0].message.content or "")
             if resultat is not None and resultat.transcription.strip():
                 return resultat, attempt + 1
             logger.warning(
