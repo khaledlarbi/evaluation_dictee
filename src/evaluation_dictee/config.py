@@ -28,6 +28,32 @@ class Secrets(BaseSettings):
     llm_api_key: str = "dummy"
 
 
+class ImageConfig(BaseModel):
+    """Préparation de l'image envoyée au lecteur (passe 1). Défaut : page telle quelle.
+
+    Voir `data/pretraitement.py` pour les mesures qui motivent chaque option.
+    """
+
+    # Recadre sur la zone d'écriture (intérieur du cadre pré-imprimé).
+    recadrage: bool = False
+    # Découpe en bandes horizontales (coupes au creux des interlignes), envoyées comme
+    # images successives d'un même appel. Utile aux modèles à budget d'image fixe (gemma).
+    n_bandes: int = Field(default=1, ge=1, le=8)
+    # Facteur d'agrandissement (Lanczos). Utile aux modèles en pleine résolution (qwen).
+    agrandissement: float = Field(default=1.0, ge=1.0, le=3.0)
+
+    def slug(self) -> str:
+        """Suffixe de nom de run ("" pour les options par défaut)."""
+        parts = []
+        if self.recadrage:
+            parts.append("crop")
+        if self.n_bandes > 1:
+            parts.append(f"b{self.n_bandes}")
+        if self.agrandissement != 1.0:
+            parts.append(f"x{self.agrandissement:g}".replace(".", "p"))
+        return "-".join(parts)
+
+
 class ModelConfig(BaseModel):
     """Paramètres du modèle à interroger."""
 
@@ -45,6 +71,8 @@ class ModelConfig(BaseModel):
     # Force une sortie JSON conforme au schéma (décodage contraint vLLM), supprimant les
     # copies non parsables. Mettre à False si l'endpoint ne supporte pas json_schema.
     structured_output: bool = True
+    # Préparation de l'image (lecteurs de la passe 1 seulement ; ignoré en étape 2).
+    image: ImageConfig = Field(default_factory=ImageConfig)
 
 
 class DataConfig(BaseModel):
@@ -207,7 +235,13 @@ def run_output_name(config: ExperimentConfig) -> str:
     Returns:
         Le préfixe des fichiers de sortie du run.
     """
-    parts = [_slugify_model_name(config.model.name)]
+
+    def _avec_image(m: ModelConfig) -> str:
+        slug_image = m.image.slug()
+        base = _slugify_model_name(m.name)
+        return f"{base}-{slug_image}" if slug_image else base
+
+    parts = [_avec_image(config.model)]
     if config.model_stage2 is not None:
         slug_stage2 = _slugify_model_name(config.model_stage2.name)
         if slug_stage2 not in parts:
@@ -215,7 +249,7 @@ def run_output_name(config: ExperimentConfig) -> str:
     # Lecteurs supplémentaires : un vote change les prédictions, il ne doit jamais
     # partager le checkpoint du run à lecteur unique.
     for lecteur in config.extra_readers:
-        slug = _slugify_model_name(lecteur.name)
+        slug = _avec_image(lecteur)
         if slug not in parts:
             parts.append(slug)
     suffix = "_".join(parts)

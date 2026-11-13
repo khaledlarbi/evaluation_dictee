@@ -585,16 +585,19 @@ def _compile_prompt(
     return compiled
 
 
-def attach_image(messages: list[ChatMessageDict], image_data_url: str) -> list[dict[str, object]]:
-    """Attache une image au dernier message user, en contenu structuré (format multimodal vLLM).
+def attach_image(
+    messages: list[ChatMessageDict], image_data_url: str | list[str]
+) -> list[dict[str, object]]:
+    """Attache une ou plusieurs images au dernier message user (format multimodal vLLM).
 
     Args:
         messages: messages du prompt ; le dernier doit être le message user.
-        image_data_url: image encodée en data URL à joindre.
+        image_data_url: image(s) encodée(s) en data URL à joindre, dans l'ordre.
 
     Returns:
         Les messages avec l'image ajoutée au contenu du dernier message user.
     """
+    urls = [image_data_url] if isinstance(image_data_url, str) else image_data_url
     *head, user = messages
     out: list[dict[str, object]] = [dict(message) for message in head]
     out.append(
@@ -602,7 +605,7 @@ def attach_image(messages: list[ChatMessageDict], image_data_url: str) -> list[d
             "role": user["role"],
             "content": [
                 {"type": "text", "text": user["content"]},
-                {"type": "image_url", "image_url": {"url": image_data_url}},
+                *({"type": "image_url", "image_url": {"url": u}} for u in urls),
             ],
         }
     )

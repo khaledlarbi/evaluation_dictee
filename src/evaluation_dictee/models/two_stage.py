@@ -14,10 +14,12 @@ from typing import Any, cast
 # n'apparaissent pas comme « générations » sous la trace de la copie.
 from langfuse.openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
+from PIL import Image
 
 from evaluation_dictee.config import ModelConfig, PromptConfig
 from evaluation_dictee.data.grid import GridItem
 from evaluation_dictee.data.loaders import Copy, load_image
+from evaluation_dictee.data.pretraitement import preparer
 from evaluation_dictee.evaluation.ensemble import vote_majoritaire
 from evaluation_dictee.models.base import CODE_NON_PARSE, CopyPrediction, ItemPrediction, Scorer
 from evaluation_dictee.models.vlm import (
@@ -96,6 +98,27 @@ def _parse_json_object(content: str) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             return None
     return data if isinstance(data, dict) else None
+
+
+def _images_lecteur(image: Image.Image, lecteur: ModelConfig) -> list[str]:
+    """Images (data URL) à envoyer à ce lecteur, préparées selon ses options d'image."""
+    return [_image_to_data_url(im) for im in preparer(image, lecteur.image)]
+
+
+_CONSIGNE_BANDES = (
+    "\n\nLa copie t'est donnée en {n} images : ce sont des bandes horizontales "
+    "successives de la même page, de haut en bas, sans chevauchement. Lis-les dans "
+    "l'ordre et transcris-les à la suite, comme un seul texte, en gardant les retours "
+    "à la ligne de la copie. Un mot coupé entre deux bandes ne s'écrit qu'une fois."
+)
+
+
+def _avec_consigne_bandes(messages: list[Any], n_images: int) -> list[Any]:
+    """Ajoute au message user la consigne de lecture des bandes (rien si une image)."""
+    if n_images <= 1:
+        return messages
+    *tete, user = messages
+    return [*tete, {**user, "content": user["content"] + _CONSIGNE_BANDES.format(n=n_images)}]
 
 
 @dataclass
@@ -241,12 +264,17 @@ class TwoStageScorer(Scorer):
             Couple (transcription, nombre de tentatives) ; transcription vide si aucun
             essai n'a produit de texte exploitable.
         """
-        image = load_image(copy.image_path)
+        urls = _images_lecteur(load_image(copy.image_path), self.model_config)
         messages = cast(
             "list[ChatCompletionMessageParam]",
             attach_image(
-                build_transcription_prompt(read_final_state=self.prompt_config.read_final_state),
-                _image_to_data_url(image),
+                _avec_consigne_bandes(
+                    build_transcription_prompt(
+                        read_final_state=self.prompt_config.read_final_state
+                    ),
+                    len(urls),
+                ),
+                urls,
             ),
         )
         request_kwargs = _request_kwargs(
@@ -292,7 +320,7 @@ class TwoStageScorer(Scorer):
         self,
         copy: Copy,
         messages_texte: list[Any],
-        image_url: str | None,
+        image_url: str | list[str] | None,
         schema: dict[str, Any],
         schema_name: str,
         parse: Any,
@@ -305,7 +333,7 @@ class TwoStageScorer(Scorer):
         Args:
             copy: Copie concernée (pour les logs).
             messages_texte: Messages du prompt, sans image.
-            image_url: Image de la copie en data URL ; None pour un appel texte seul.
+            image_url: Image(s) de la copie en data URL ; None pour un appel texte seul.
             schema: Schéma JSON attendu (décodage contraint si activé).
             schema_name: Nom du schéma transmis à l'API.
             parse: Fonction contenu → `_ResultatPasse | None`.
@@ -374,26 +402,33 @@ class TwoStageScorer(Scorer):
         self,
         copy: Copy,
         lecteur: ModelConfig | None = None,
-        image_url: str | None = None,
+        image: Image.Image | None = None,
     ) -> tuple[str, int, _ResultatPasse | None, Alignement | None]:
         """Passe 1 (lecture à l'aveugle avec l'image), puis alignement LOCAL sur les items.
 
         Args:
             copy: Copie dont l'image est à transcrire.
             lecteur: Modèle qui lit la copie ; celui de l'étape 1 si None.
-            image_url: Image déjà encodée (évite de la recharger pour chaque lecteur).
+            image: Page déjà chargée (évite de la recharger pour chaque lecteur) ; elle
+                est préparée selon les options d'image du lecteur.
 
         Returns:
             (transcription, nb de tentatives, résultat passe 1, alignement) ;
             transcription vide et alignement None si la passe 1 a échoué.
         """
-        if image_url is None:
-            image_url = _image_to_data_url(load_image(copy.image_path))
+        if image is None:
+            image = load_image(copy.image_path)
         cfg = lecteur or self.model_config
+        urls = _images_lecteur(image, cfg)
         passe1, n1 = self._appel_image(
             copy,
-            build_transcription_passe1_prompt(read_final_state=self.prompt_config.read_final_state),
-            image_url,
+            _avec_consigne_bandes(
+                build_transcription_passe1_prompt(
+                    read_final_state=self.prompt_config.read_final_state
+                ),
+                len(urls),
+            ),
+            urls,
             _PASSE1_SCHEMA,
             "transcription_passe1",
             self._parse_passe1,
@@ -559,10 +594,10 @@ class TwoStageScorer(Scorer):
         """
         if not self.lecteurs_supplementaires:
             return self._score_un_lecteur(copy, reference_text, self.model_config)
-        image_url = _image_to_data_url(load_image(copy.image_path))
+        image = load_image(copy.image_path)
         lecteurs = [self.model_config, *self.lecteurs_supplementaires]
         predictions = [
-            self._score_un_lecteur(copy, reference_text, lecteur, image_url) for lecteur in lecteurs
+            self._score_un_lecteur(copy, reference_text, lecteur, image) for lecteur in lecteurs
         ]
         return self._voter(copy, predictions)
 
@@ -624,7 +659,7 @@ class TwoStageScorer(Scorer):
         copy: Copy,
         reference_text: str | None,
         lecteur: ModelConfig,
-        image_url: str | None = None,
+        image: Image.Image | None = None,
     ) -> CopyPrediction:
         """Lecture par un modèle, puis codage : la chaîne complète pour UN lecteur.
 
@@ -632,7 +667,7 @@ class TwoStageScorer(Scorer):
             copy: Copie à évaluer.
             reference_text: Texte de référence de la dictée, ou None.
             lecteur: Modèle qui lit la copie (passe 1).
-            image_url: Image déjà encodée, partagée entre lecteurs.
+            image: Page déjà chargée, partagée entre lecteurs.
 
         Returns:
             Prédiction de la copie pour ce lecteur.
@@ -641,7 +676,7 @@ class TwoStageScorer(Scorer):
         alignement: Alignement | None = None
         if self.prompt_config.transcription_verification:
             transcription, n_attempts, passe1, alignement = self._transcribe_et_aligner(
-                copy, lecteur, image_url
+                copy, lecteur, image
             )
         else:
             transcription, n_attempts = self._transcribe(copy)
