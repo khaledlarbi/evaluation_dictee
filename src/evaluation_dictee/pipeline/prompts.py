@@ -340,6 +340,14 @@ _TEMPLATE_TRANSCRIPTION_PASSE1: list[ChatMessageDict] = [
             "le JSON.\n"
             "7 - Si tu hésites sur un mot, écris dans la transcription la lecture la plus "
             'probable suivie de [?], et décris ton hésitation dans "incertains".\n'
+            "8 - Les enfants dessinent souvent un petit rond au lieu du point sur le i. "
+            "Un i surmonté d'un rond est un i normal : transcris « i ». Ce n'est ni un "
+            "« î », ni un « ï », ni un « o », ni un signe « ° ».\n"
+            "9 - Après chaque point, regarde attentivement la première lettre qui suit. "
+            "Vérifie à sa forme et à sa hauteur si c'est une majuscule. Transcris-la "
+            "comme elle est tracée : majuscule si l'élève a écrit une majuscule, "
+            "minuscule s'il a écrit une minuscule. Ne mets pas de majuscule au seul motif "
+            "qu'un point précède, et ne l'oublie pas si elle est tracée.\n"
             "{{consigne_ratures}}"
         ),
     },

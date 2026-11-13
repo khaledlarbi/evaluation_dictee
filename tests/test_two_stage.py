@@ -226,3 +226,11 @@ def test_prompt_passe1_consigne_ratures() -> None:
     assert "Ratures : " + _CONSIGNE_RATURES_TRANSCRIPTION in avec
     assert "Ratures" not in sans
     assert "{{" not in avec + sans
+
+
+def test_prompt_passe1_ronds_sur_i_et_majuscule_apres_point() -> None:
+    from evaluation_dictee.pipeline.prompts import build_transcription_passe1_prompt
+
+    systeme = build_transcription_passe1_prompt()[0]["content"]
+    assert "rond au lieu du point sur le i" in systeme
+    assert "Après chaque point" in systeme
