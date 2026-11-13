@@ -102,3 +102,12 @@ def test_coupes_decalees() -> None:
     for c in decalees:
         assert not any(y0 <= c < y1 for y0, y1 in lignes), c
     assert ImageConfig(recadrage=True, n_bandes=4, decalage_bandes=0.5).slug() == "crop-b4-d0p5"
+
+
+def test_epaississement() -> None:
+    a = np.full((50, 50), 255, dtype=np.uint8)
+    a[25, 25] = 0  # un point d'un pixel
+    (sortie,) = preparer(Image.fromarray(a, mode="L"), ImageConfig(epaississement=1))
+    encre = np.asarray(sortie) < 128
+    assert encre.sum() == 9 and encre[24:27, 24:27].all()
+    assert ImageConfig(recadrage=True, n_bandes=4, epaississement=1).slug() == "crop-b4-e1"

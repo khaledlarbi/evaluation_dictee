@@ -17,7 +17,7 @@ du pré-imprimé identique d'une copie à l'autre.
 from __future__ import annotations
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from evaluation_dictee.config import ImageConfig
 
@@ -133,11 +133,27 @@ def points_de_coupe(image: Image.Image, n_bandes: int, decalage: float = 0.0) ->
     return coupes
 
 
+def epaissir(image: Image.Image, rayon: int) -> Image.Image:
+    """Épaissit le trait de `rayon` pixels de chaque côté (encre sombre sur fond clair).
+
+    Appliqué après le découpage : les coupes restent calculées sur le trait d'origine.
+
+    Args:
+        image: image en niveaux de gris.
+        rayon: épaississement, en pixels.
+
+    Returns:
+        L'image au trait épaissi.
+    """
+    return image.convert("L").filter(ImageFilter.MinFilter(2 * rayon + 1))
+
+
 def preparer(image: Image.Image, options: ImageConfig) -> list[Image.Image]:
     """Images à envoyer au lecteur, dans l'ordre de lecture (de haut en bas).
 
     Recadrage sur le cadre, puis découpage en bandes sans chevauchement, puis
-    agrandissement de chaque bande. Options par défaut : la page telle quelle.
+    épaississement du trait et agrandissement de chaque bande. Options par défaut :
+    la page telle quelle.
 
     Args:
         image: page scannée.
@@ -154,6 +170,8 @@ def preparer(image: Image.Image, options: ImageConfig) -> list[Image.Image]:
     bornes = [0, *coupes, image.height]
     paires = zip(bornes, bornes[1:], strict=False)
     bandes = [image.crop((0, y0, image.width, y1)) for y0, y1 in paires]
+    if options.epaississement:
+        bandes = [epaissir(b, options.epaississement) for b in bandes]
     if options.agrandissement != 1.0:
         f = options.agrandissement
         bandes = [

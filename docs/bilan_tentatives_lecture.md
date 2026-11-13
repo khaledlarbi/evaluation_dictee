@@ -70,11 +70,11 @@ lisent en pleine résolution (32 px par token) ; gemma ramène toute image à en
 |---|---|---|
 | Deuxième lecture gemma à coupes décalées, à la place de qwen3-6 | kappa 0,759 contre 0,754 (bruit) ; erreurs trop corrélées à la première lecture gemma (73 % contre 57 % pour qwen3-6) | non |
 | Relecture en zoom des items discordants (gemma) | moins juste que le vote sur les items relus (63 % contre 68 %), biais +4 pt quand elle tranche. Seul intérêt : filtrer le renvoi (7,4 % pour 5,7 % d'erreur), pour ≈ 15 appels de plus par copie | non |
+| Épaississement du trait de 1 px, sur les trois lecteurs (49 copies) | tous les lecteurs perdent (vote 0,747 → 0,686 ; gemma 0,725 → 0,631), la ponctuation la première : un point se colle aux lettres, les boucles se referment | non |
 | Même relecture avec qwen3-8-27b, bande agrandie ×2 | encore moins bon (testé seulement avant la correction de la localisation) | non |
 
 ## Reste à faire
 
 - Lancer la config de vote telle quelle sur 50 copies, pour confirmer le 0,739 hors
   recombinaison.
-- Tester l'épaississement des traits avant la réduction de gemma.
 - Demander à la DEPP des scans en niveaux de gris, s'ils existent en amont.

@@ -83,9 +83,7 @@ Lecture :
 
 ## Pistes restantes
 
-1. **Épaissir légèrement les traits** avant la réduction de gemma (dilatation de
-   1 px) : un trait fin en 1 bit devient un gris pâle une fois réduit. A/B sur gemma.
-2. **Demander à la DEPP des scans en niveaux de gris**, s'ils existent en amont. La
+1. **Demander à la DEPP des scans en niveaux de gris**, s'ils existent en amont. La
    binarisation 1 bit a déjà effacé une partie des accents légers.
 
 ## Essais sans gain (30 copies, 2 490 items, 13/11/2026)
@@ -132,6 +130,23 @@ la majorité donne 7,4 % de renvoi pour 5,7 % d'erreur résiduelle, contre 12,2 
 4,8 % (renvoi des seuls désaccords qwen3-8-27b/gemma) ou 17,9 % et 3,5 % pour le
 vote seul : un point un peu meilleur que l'interpolation entre ces deux-là
 (≈ 6,6 %), pour ≈ 15 appels de plus par copie. **Non retenu en l'état.**
+
+### Épaississement du trait de 1 px (49 copies, 4 067 items)
+
+`image: {epaississement: 1}` (dilatation de l'encre après découpage), sur chacun
+des trois lecteurs de la meilleure config. Une copie de qwen3-8-27b bloquée (boucle
+de génération) : comparaison sur les 49 copies communes.
+
+| Lecteur | Kappa sans → avec | Ponct. sans → avec | Ponctuation correcte non vue |
+|---|---|---|---|
+| qwen3-8-27b | 0,690 → 0,618 | 0,577 → 0,457 | 7,9 % → 11,6 % |
+| gemma, recadrage + 4 bandes | 0,725 → 0,631 | 0,594 → 0,434 | 7,2 % → 14,5 % |
+| qwen3-6-35b-moe | 0,653 → 0,608 | 0,616 → 0,538 | 6,8 % → 10,2 % |
+| Vote à trois | 0,747 → 0,686 | 0,655 → 0,539 | 6,1 % → 10,3 % |
+
+Tous les lecteurs perdent, la ponctuation la première, à l'inverse de l'effet
+attendu : épaissi, un point se colle aux lettres voisines et les boucles des
+lettres (e, a, o) se referment. **Non retenu** ; l'option reste à 0 par défaut.
 
 ## Points de référence du vote (50 copies, 4 150 items)
 

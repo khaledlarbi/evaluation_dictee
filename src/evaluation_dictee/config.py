@@ -43,6 +43,10 @@ class ImageConfig(BaseModel):
     # bandes non décalées, une bande de plus). Sert à une deuxième lecture du même
     # modèle dont les coupes, donc les erreurs, diffèrent de la première.
     decalage_bandes: float = Field(default=0.0, ge=0.0, lt=1.0)
+    # Épaississement du trait, en pixels (dilatation de l'encre) : un trait fin du scan
+    # 1 bit (points, virgules, accents) devient un gris pâle quand le modèle réduit
+    # l'image ; épaissi, il résiste mieux à la réduction.
+    epaississement: int = Field(default=0, ge=0, le=3)
     # Facteur d'agrandissement (Lanczos). Utile aux modèles en pleine résolution (qwen).
     agrandissement: float = Field(default=1.0, ge=1.0, le=3.0)
 
@@ -55,6 +59,8 @@ class ImageConfig(BaseModel):
             parts.append(f"b{self.n_bandes}")
         if self.decalage_bandes:
             parts.append(f"d{self.decalage_bandes:g}".replace(".", "p"))
+        if self.epaississement:
+            parts.append(f"e{self.epaississement}")
         if self.agrandissement != 1.0:
             parts.append(f"x{self.agrandissement:g}".replace(".", "p"))
         return "-".join(parts)
