@@ -89,7 +89,20 @@ def main() -> None:
         with experiment_run(config):
             result = run_benchmark(config, scorer)
             diagnostic = compute_diagnostic_metrics(
-                result.y_true, result.y_pred, result.item_ids, types_items
+                result.y_true,
+                result.y_pred,
+                result.item_ids,
+                types_items,
+                # Décomposition lecture/codage : seulement si la transcription par item
+                # vient d'un alignement explicite (sinon elle n'est pas comparable).
+                # Codes 1/9/0 uniquement : la grille simplifiée.
+                transcriptions=(
+                    result.transcriptions
+                    if config.prompt.transcription_verification
+                    and config.grid.scheme == "simplifiee"
+                    else None
+                ),
+                attendus={it.item_id: it.attendu for it in grid.items},
             )
             log_metrics(
                 config,
@@ -139,6 +152,16 @@ def main() -> None:
             diagnostic.get("kappa_mots", float("nan")),
             diagnostic.get("kappa_ponctuation", float("nan")),
         )
+        if "part_desaccords_codage" in diagnostic:
+            logger.info(
+                "Origine des %d désaccords : %.0f %% CODAGE (code ≠ ce qui a été lu) | "
+                "%.0f %% LECTURE (code cohérent avec une lecture fausse) | incohérence "
+                "de codage sur %.1f %% des items",
+                int(diagnostic["n_desaccords"]),
+                diagnostic["part_desaccords_codage"] * 100,
+                diagnostic["part_desaccords_lecture"] * 100,
+                diagnostic["taux_incoherence_codage"] * 100,
+            )
 
     logger.info("Courbe de renvoi humain :")
     for point in referral_curve(result.y_true, result.y_pred, result.confidences):

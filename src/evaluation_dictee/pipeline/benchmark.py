@@ -48,6 +48,9 @@ class BenchmarkResult:
     confidences: list[float | None]
     item_ids: list[str] = field(default_factory=list)
     copy_ids: list[str] = field(default_factory=list)
+    # Transcription retenue pour chaque item (alignée sur y_true), None si absente du
+    # JSONL : sert à séparer erreurs de lecture et erreurs de codage.
+    transcriptions: list[str | None] = field(default_factory=list)
     predictions_path: Path | None = None
     non_transcribed: list[str] = field(default_factory=list)
     # Copies ÉCARTÉES des métriques, par motif. Elles restent dans le JSONL (rien
@@ -511,6 +514,7 @@ def run_benchmark(
     confidences: list[float | None] = []
     item_ids: list[str] = []
     copy_ids: list[str] = []
+    transcriptions: list[str | None] = []
     # Déduplication par (copy_id, item_id), la DERNIÈRE occurrence gagne. Un fichier
     # écrit par deux runs concurrents (ou repris après un crash à mi-copie) contient la
     # même copie plusieurs fois ; sans cette passe, chaque item dupliqué pèse double
@@ -582,6 +586,7 @@ def run_benchmark(
         confidences.append(rec.get("confidence"))
         item_ids.append(rec["item_id"])
         copy_ids.append(rec["copy_id"])
+        transcriptions.append(rec.get("transcription"))
     # Garde-fou : après normalisation, un code hors de l'alphabet attendu signale une
     # incohérence (prétraitement expert oublié, prompt non aligné sur le schéma).
     attendus = reference.allowed_codes(scheme)
@@ -652,6 +657,7 @@ def run_benchmark(
         confidences=confidences,
         item_ids=item_ids,
         copy_ids=copy_ids,
+        transcriptions=transcriptions,
         predictions_path=out_path,
         non_transcribed=non_transcrites,
         blank_copies=sorted(c for c, m in copies_ecartees.items() if m == "vierge"),

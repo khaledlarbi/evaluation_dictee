@@ -64,6 +64,8 @@ def compute_diagnostic_metrics(
     y_pred: list[str],
     item_ids: list[str],
     item_types: dict[str, str],
+    transcriptions: list[str | None] | None = None,
+    attendus: dict[str, str] | None = None,
 ) -> dict[str, float]:
     """Métriques de diagnostic d'un run, au-delà de l'accord et du kappa.
 
@@ -84,6 +86,9 @@ def compute_diagnostic_metrics(
         y_pred: codes prédits, alignés sur `y_true`.
         item_ids: identifiant d'item de chaque décision.
         item_types: nature de chaque item ("mot" ou "ponctuation"), par identifiant.
+        transcriptions: transcription retenue par item (alignée sur `y_true`) ; si
+            fournie avec `attendus`, ajoute la décomposition lecture/codage.
+        attendus: mot attendu par identifiant d'item.
 
     Returns:
         Les métriques de diagnostic. Une métrique indéfinie (strate vide ou kappa non
@@ -112,4 +117,73 @@ def compute_diagnostic_metrics(
         ).cohen_kappa
         if kappa is not None and not math.isnan(kappa):
             out[f"kappa_{suffixe}"] = kappa
+    if transcriptions is not None and attendus is not None:
+        out.update(decompose_lecture_codage(y_true, y_pred, item_ids, transcriptions, attendus))
+    return out
+
+
+def code_coherent(ecrit: str, attendu: str) -> str:
+    """Code simplifié qu'implique la transcription seule : identique, vide ou différente.
+
+    Sert de RÉFÉRENCE de diagnostic, pas de codage : elle dit ce qu'un codeur
+    parfaitement cohérent avec la lecture aurait rendu.
+    """
+    if not ecrit.strip():
+        return reference.SIMPLE_ABSENT
+    return reference.SIMPLE_CORRECT if ecrit == attendu else reference.SIMPLE_ERREUR
+
+
+def decompose_lecture_codage(
+    y_true: list[str],
+    y_pred: list[str],
+    item_ids: list[str],
+    transcriptions: list[str | None],
+    attendus: dict[str, str],
+) -> dict[str, float]:
+    """Sépare les désaccords modèle/expert dus au CODAGE de ceux dus à la LECTURE.
+
+    Pour chaque item, on compare le code prédit au code qu'implique la transcription
+    (`code_coherent`) :
+    - différents → erreur de CODAGE (le modèle code autre chose que ce qu'il a lu) ;
+    - identiques mais en désaccord avec l'expert → erreur de LECTURE (la transcription
+      ne reflète pas la copie, ou la grille tolère une forme que la lecture distingue).
+
+    Pertinent seulement quand la transcription par item vient d'un alignement explicite
+    (option `transcription_verification`) ; les items sans transcription sont ignorés.
+
+    Args:
+        y_true: codes experts (grille simplifiée).
+        y_pred: codes prédits, alignés sur `y_true`.
+        item_ids: identifiant d'item de chaque décision.
+        transcriptions: transcription retenue par item, None si inconnue.
+        attendus: mot attendu par identifiant d'item.
+
+    Returns:
+        `part_desaccords_codage` et `part_desaccords_lecture` (sommant à 1, sur les
+        désaccords), `taux_incoherence_codage` (sur tous les items) et les effectifs.
+        Vide si aucun item n'a de transcription.
+    """
+    n_items = n_desaccords = n_codage = n_lecture = n_incoherents = 0
+    for vrai, pred, item_id, ecrit in zip(y_true, y_pred, item_ids, transcriptions, strict=True):
+        if ecrit is None or item_id not in attendus:
+            continue
+        n_items += 1
+        coherent = code_coherent(ecrit, attendus[item_id])
+        incoherent = pred != coherent
+        n_incoherents += incoherent
+        if pred != vrai:
+            n_desaccords += 1
+            if incoherent:
+                n_codage += 1
+            else:
+                n_lecture += 1
+    if n_items == 0:
+        return {}
+    out: dict[str, float] = {
+        "taux_incoherence_codage": n_incoherents / n_items,
+        "n_desaccords": float(n_desaccords),
+    }
+    if n_desaccords:
+        out["part_desaccords_codage"] = n_codage / n_desaccords
+        out["part_desaccords_lecture"] = n_lecture / n_desaccords
     return out
