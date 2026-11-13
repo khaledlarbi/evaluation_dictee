@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -136,9 +136,29 @@ class ExperimentConfig(BaseModel):
     model: ModelConfig
     # Modèle de l'étape 2 (codage textuel) en two_stage ; si absent, on réutilise `model`.
     model_stage2: ModelConfig | None = None
+    # Lecteurs SUPPLÉMENTAIRES (two_stage + transcription_verification) : chacun relit
+    # la copie (passe 1), son texte est aligné puis codé par `model_stage2`, et le code
+    # retenu par item est le code majoritaire (`model` l'emporte en cas d'égalité). La
+    # confiance d'un item = part des lecteurs qui donnent ce code : la discordance
+    # entre lecteurs sert de score de renvoi humain. Mesuré le 13/11/2026 sur 50 copies
+    # (qwen3-8-27b, gemma4-26b-moe, qwen3-6-35b-moe) : kappa 0,728 contre 0,687 pour
+    # le meilleur lecteur seul. Coût : un appel de lecture et un de codage par lecteur.
+    extra_readers: list[ModelConfig] = Field(default_factory=list)
     data: DataConfig
     grid: GridConfig = GridConfig()
     prompt: PromptConfig = PromptConfig()
+
+    @model_validator(mode="after")
+    def _lecteurs_supplementaires_valides(self) -> ExperimentConfig:
+        """Le vote entre lecteurs suppose l'alignement local (two_stage + vérification)."""
+        if self.extra_readers and not (
+            self.approach == "two_stage" and self.prompt.transcription_verification
+        ):
+            raise ValueError(
+                "`extra_readers` exige approach: two_stage et "
+                "prompt.transcription_verification: true (alignement par item)."
+            )
+        return self
 
 
 def load_config(path: str | Path) -> ExperimentConfig:
@@ -192,6 +212,12 @@ def run_output_name(config: ExperimentConfig) -> str:
         slug_stage2 = _slugify_model_name(config.model_stage2.name)
         if slug_stage2 not in parts:
             parts.append(slug_stage2)
+    # Lecteurs supplémentaires : un vote change les prédictions, il ne doit jamais
+    # partager le checkpoint du run à lecteur unique.
+    for lecteur in config.extra_readers:
+        slug = _slugify_model_name(lecteur.name)
+        if slug not in parts:
+            parts.append(slug)
     suffix = "_".join(parts)
 
     if config.name == suffix or config.name.endswith(f"_{suffix}"):

@@ -360,6 +360,9 @@ def run_benchmark(
                         "n_incertains_passe2": prediction.n_incertains_passe2,
                         "n_absents_alignement": prediction.n_absents_alignement,
                         "n_mots_en_trop_alignement": prediction.n_mots_en_trop_alignement,
+                        # Vote entre lecteurs (extra_readers) : None sinon.
+                        "codes_lecteurs": pred.codes_lecteurs if pred else None,
+                        "transcriptions_lecteurs": prediction.transcriptions_lecteurs,
                         "approach": config.approach,
                         "model": model_name,
                         "model_stage2": model_stage2_name,

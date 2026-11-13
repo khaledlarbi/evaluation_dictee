@@ -18,6 +18,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from evaluation_dictee.config import ModelConfig, PromptConfig
 from evaluation_dictee.data.grid import GridItem
 from evaluation_dictee.data.loaders import Copy, load_image
+from evaluation_dictee.evaluation.ensemble import vote_majoritaire
 from evaluation_dictee.models.base import CODE_NON_PARSE, CopyPrediction, ItemPrediction, Scorer
 from evaluation_dictee.models.vlm import (
     _image_to_data_url,
@@ -204,6 +205,7 @@ class TwoStageScorer(Scorer):
         grid_items: list[GridItem],
         scheme: str = "simplifiee",
         model_config_stage2: ModelConfig | None = None,
+        lecteurs_supplementaires: list[ModelConfig] | None = None,
     ) -> None:
         """Initialise le client, l'index des items et les configs des deux étapes.
 
@@ -216,6 +218,8 @@ class TwoStageScorer(Scorer):
             scheme: Grille de codage utilisée (par défaut « simplifiee »).
             model_config_stage2: Configuration du modèle de l'étape 2 (codage textuel) ;
                 reprend `model_config` si None.
+            lecteurs_supplementaires: Modèles qui relisent aussi la copie ; le code
+                retenu par item est alors le code majoritaire entre lecteurs.
         """
         self.model_config = model_config
         self.model_config_stage2 = model_config_stage2 or model_config
@@ -224,6 +228,7 @@ class TwoStageScorer(Scorer):
         self.grid_items = grid_items
         self.scheme = scheme
         self._items_by_id = {it.item_id: it for it in grid_items}
+        self.lecteurs_supplementaires = list(lecteurs_supplementaires or [])
 
     # ── Étape 1 : transcription HTR ──────────────────────────────────────────
     def _transcribe(self, copy: Copy) -> tuple[str, int]:
@@ -366,18 +371,25 @@ class TwoStageScorer(Scorer):
         )
 
     def _transcribe_et_aligner(
-        self, copy: Copy
+        self,
+        copy: Copy,
+        lecteur: ModelConfig | None = None,
+        image_url: str | None = None,
     ) -> tuple[str, int, _ResultatPasse | None, Alignement | None]:
         """Passe 1 (lecture à l'aveugle avec l'image), puis alignement LOCAL sur les items.
 
         Args:
             copy: Copie dont l'image est à transcrire.
+            lecteur: Modèle qui lit la copie ; celui de l'étape 1 si None.
+            image_url: Image déjà encodée (évite de la recharger pour chaque lecteur).
 
         Returns:
             (transcription, nb de tentatives, résultat passe 1, alignement) ;
             transcription vide et alignement None si la passe 1 a échoué.
         """
-        image_url = _image_to_data_url(load_image(copy.image_path))
+        if image_url is None:
+            image_url = _image_to_data_url(load_image(copy.image_path))
+        cfg = lecteur or self.model_config
         passe1, n1 = self._appel_image(
             copy,
             build_transcription_passe1_prompt(read_final_state=self.prompt_config.read_final_state),
@@ -385,8 +397,9 @@ class TwoStageScorer(Scorer):
             _PASSE1_SCHEMA,
             "transcription_passe1",
             self._parse_passe1,
-            "Passe 1 (transcription aveugle)",
+            f"Passe 1 (transcription aveugle, {cfg.name})",
             PROMPT_TRANSCRIPTION_PASSE1,
+            model_config=cfg,
         )
         if passe1 is None:
             return "", n1, None, None
@@ -532,19 +545,104 @@ class TwoStageScorer(Scorer):
     def score_copy(self, copy: Copy, reference_text: str | None) -> CopyPrediction:
         """Évalue une copie : transcription puis codage (non transcrite si l'étape 1 échoue).
 
+        Avec des lecteurs supplémentaires, chaque lecteur lit et fait coder la copie,
+        puis on vote item par item (`_voter`).
+
         Args:
             copy: Copie à évaluer.
             reference_text: Texte de référence de la dictée, ou None.
 
         Returns:
-            Prédiction de la copie ; `transcribed=False` si l'étape 1 (HTR) n'a produit
-            aucune transcription. La transcription brute est conservée dans
-            `raw_transcription`.
+            Prédiction de la copie ; `transcribed=False` si aucune lecture n'a produit
+            de transcription. La transcription brute est conservée dans
+            `raw_transcription` (celle du lecteur principal).
+        """
+        if not self.lecteurs_supplementaires:
+            return self._score_un_lecteur(copy, reference_text, self.model_config)
+        image_url = _image_to_data_url(load_image(copy.image_path))
+        lecteurs = [self.model_config, *self.lecteurs_supplementaires]
+        predictions = [
+            self._score_un_lecteur(copy, reference_text, lecteur, image_url) for lecteur in lecteurs
+        ]
+        return self._voter(copy, predictions)
+
+    def _voter(self, copy: Copy, predictions: list[CopyPrediction]) -> CopyPrediction:
+        """Combine les prédictions de plusieurs lecteurs par vote majoritaire, item par item.
+
+        Confiance d'un item = part des lecteurs qui donnent le code retenu (1 si tous
+        concordent) : c'est le score de renvoi humain. Le lecteur principal (premier)
+        l'emporte en cas d'égalité, et fournit les champs de niveau copie.
+
+        Args:
+            copy: Copie évaluée.
+            predictions: une prédiction par lecteur, lecteur principal en premier.
+
+        Returns:
+            La prédiction combinée.
+        """
+        par_lecteur = [
+            {it.item_id: it for it in p.items} if p.transcribed else {} for p in predictions
+        ]
+        items: list[ItemPrediction] = []
+        for item_id in copy.item_ids:
+            preds = [d.get(item_id) for d in par_lecteur]
+            codes: list[str | None] = [
+                p.code if p is not None and p.code != CODE_NON_PARSE else None for p in preds
+            ]
+            code, confiance, idx = vote_majoritaire(codes)
+            source = preds[idx] if idx is not None else None
+            items.append(
+                ItemPrediction(
+                    item_id=item_id,
+                    code=code if code is not None else CODE_NON_PARSE,
+                    confidence=confiance,
+                    transcription=source.transcription if source is not None else None,
+                    codes_lecteurs=[c if c is not None else CODE_NON_PARSE for c in codes],
+                )
+            )
+        principal = predictions[0]
+        combinee = CopyPrediction(
+            copy_id=copy.copy_id,
+            items=items,
+            transcribed=any(p.transcribed for p in predictions),
+            n_attempts=sum(p.n_attempts for p in predictions),
+        )
+        for champ in (
+            "raw_transcription",
+            "transcription_passe1",
+            "n_incertains_passe1",
+            "n_absents_alignement",
+            "n_mots_en_trop_alignement",
+            "reasoning",
+        ):
+            setattr(combinee, champ, getattr(principal, champ))
+        combinee.transcriptions_lecteurs = [p.raw_transcription for p in predictions]
+        return combinee
+
+    def _score_un_lecteur(
+        self,
+        copy: Copy,
+        reference_text: str | None,
+        lecteur: ModelConfig,
+        image_url: str | None = None,
+    ) -> CopyPrediction:
+        """Lecture par un modèle, puis codage : la chaîne complète pour UN lecteur.
+
+        Args:
+            copy: Copie à évaluer.
+            reference_text: Texte de référence de la dictée, ou None.
+            lecteur: Modèle qui lit la copie (passe 1).
+            image_url: Image déjà encodée, partagée entre lecteurs.
+
+        Returns:
+            Prédiction de la copie pour ce lecteur.
         """
         passe1: _ResultatPasse | None = None
         alignement: Alignement | None = None
         if self.prompt_config.transcription_verification:
-            transcription, n_attempts, passe1, alignement = self._transcribe_et_aligner(copy)
+            transcription, n_attempts, passe1, alignement = self._transcribe_et_aligner(
+                copy, lecteur, image_url
+            )
         else:
             transcription, n_attempts = self._transcribe(copy)
 

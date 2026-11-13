@@ -257,3 +257,65 @@ def test_passe1_tronquee_relancee(monkeypatch) -> None:
     transcription, n, passe1, _ = scorer._transcribe_et_aligner(_copy())
     assert transcription == "Le soir tombait"
     assert n == 2
+
+
+def test_vote_entre_trois_lecteurs(monkeypatch) -> None:
+    """Chaque lecteur lit puis fait coder ; le code retenu est majoritaire par item."""
+    scorer = _make_scorer_deux_passes([], monkeypatch)
+    scorer.lecteurs_supplementaires = [ModelConfig(name="m2"), ModelConfig(name="m3")]
+
+    def codage(codes: list[str], lus: list[str]) -> str:
+        return json.dumps(
+            {
+                "items": [
+                    {"item_id": f"i{k + 1}", "transcription": t, "code": c}
+                    for k, (c, t) in enumerate(zip(codes, lus, strict=True))
+                ]
+            }
+        )
+
+    scorer.client = _FakeClient(
+        [
+            _passe1("Le soir tombait"),
+            codage(["1", "1", "1"], ["Le", "soir", "tombait"]),
+            _passe1("Le soire tombait"),
+            codage(["1", "9", "1"], ["Le", "soire", "tombait"]),
+            _passe1("Le soire tombé"),
+            codage(["1", "9", "9"], ["Le", "soire", "tombé"]),
+        ]
+    )
+    pred = scorer.score_copy(_copy(), "Le soir tombait")
+
+    appels = scorer.client.appels
+    assert [a["model"] for a in appels[::2]] == ["m1", "m2", "m3"]  # passe 1 de chaque lecteur
+    assert [it.code for it in pred.items] == ["1", "9", "1"]
+    assert [round(it.confidence, 2) for it in pred.items] == [1.0, 0.67, 0.67]
+    assert pred.items[1].codes_lecteurs == ["1", "9", "9"]
+    # Transcription de l'item : celle d'un lecteur qui a voté le code retenu.
+    assert pred.items[1].transcription == "soire"
+    assert pred.raw_transcription == "Le soir tombait"  # lecteur principal
+    assert pred.transcriptions_lecteurs == [
+        "Le soir tombait",
+        "Le soire tombait",
+        "Le soire tombé",
+    ]
+    assert pred.n_attempts == 3
+
+
+def test_extra_readers_exige_alignement() -> None:
+    import pytest
+
+    from evaluation_dictee.config import ExperimentConfig, run_output_name
+
+    base = {
+        "name": "r",
+        "approach": "two_stage",
+        "model": {"name": "a"},
+        "model_stage2": {"name": "c"},
+        "extra_readers": [{"name": "b"}],
+        "data": {"corpus": "dictee", "images_path": "x", "labels_path": "y", "grid_path": "z"},
+    }
+    with pytest.raises(ValueError, match="extra_readers"):
+        ExperimentConfig.model_validate(base)
+    cfg = ExperimentConfig.model_validate({**base, "prompt": {"transcription_verification": True}})
+    assert run_output_name(cfg) == "r_a_c_b"

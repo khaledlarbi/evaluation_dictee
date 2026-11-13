@@ -29,6 +29,9 @@ class ItemPrediction:
     # comparaison écrite après le code est une justification a posteriori, pas un
     # raisonnement — la distinction doit rester visible dans les résultats.
     comparaison_avant_code: bool | None = None
+    # Vote entre lecteurs (`extra_readers`) : code de chaque lecteur, lecteur principal
+    # en premier ; None sans vote.
+    codes_lecteurs: list[str] | None = None
 
 
 @dataclass
@@ -54,6 +57,8 @@ class CopyPrediction:
     # mots lus associés à aucun item.
     n_absents_alignement: int | None = None
     n_mots_en_trop_alignement: int | None = None
+    # Vote entre lecteurs : transcription de chaque lecteur, principal en premier.
+    transcriptions_lecteurs: list[str | None] | None = None
     # Raisonnement natif du modèle (champ `reasoning_content` de l'API), quand le mode
     # thinking est actif. C'est du niveau COPIE, pas de l'item : le modèle produit un
     # seul bloc pour les 83 items. Stocké à part (`<run>_reasoning.jsonl`) et jamais

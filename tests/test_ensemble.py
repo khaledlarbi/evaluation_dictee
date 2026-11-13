@@ -53,3 +53,15 @@ def test_arbitrage_par_troisieme_lecture() -> None:
     )
     # i0 : A = B → C ignoré ; i1, i2 : C départage ; i3 : tous différents → indécis.
     assert c.arbitrer() == ["1", "9", "9", None]
+
+
+def test_vote_majoritaire() -> None:
+    from evaluation_dictee.evaluation.ensemble import vote_majoritaire
+
+    assert vote_majoritaire(["1", "1", "1"]) == ("1", 1.0, 0)
+    assert vote_majoritaire(["1", "9", "9"]) == ("9", 2 / 3, 1)
+    # Trois codes différents : le lecteur principal l'emporte, confiance 1/3.
+    assert vote_majoritaire(["0", "9", "1"]) == ("0", 1 / 3, 0)
+    # Un lecteur en échec ne vote pas mais compte dans la confiance.
+    assert vote_majoritaire([None, "9", "9"]) == ("9", 2 / 3, 1)
+    assert vote_majoritaire([None, None]) == (None, 0.0, None)

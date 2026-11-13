@@ -35,6 +35,7 @@ def build_scorer(
             grid_items=grid_items,
             scheme=config.grid.scheme,
             model_config_stage2=config.model_stage2,
+            lecteurs_supplementaires=config.extra_readers,
         )
     return VLMScorer(
         model_config=config.model,

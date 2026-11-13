@@ -14,6 +14,33 @@ from pathlib import Path
 
 from evaluation_dictee.data import reference
 
+
+def vote_majoritaire(codes: list[str | None]) -> tuple[str | None, float, int | None]:
+    """Code majoritaire entre lecteurs, confiance et lecteur retenu.
+
+    Les lecteurs sont passés par ordre de priorité : en cas d'égalité (trois codes
+    différents, ou 1 contre 1 quand un lecteur a échoué), le premier l'emporte. Un
+    lecteur en échec (None) ne vote pas mais compte dans le dénominateur de la
+    confiance : son absence est une source d'incertitude.
+
+    Args:
+        codes: code de chaque lecteur, None si ce lecteur n'a rien produit.
+
+    Returns:
+        (code retenu, confiance = part des lecteurs qui le donnent, indice du premier
+        lecteur qui le donne) ; (None, 0.0, None) si aucun lecteur n'a voté.
+    """
+    exprimes = [c for c in codes if c is not None]
+    if not exprimes:
+        return None, 0.0, None
+    compte = {c: exprimes.count(c) for c in exprimes}
+    meilleur = max(compte.values())
+    # Premier lecteur (ordre de priorité) parmi les codes à égalité en tête.
+    idx = next(i for i, c in enumerate(codes) if c is not None and compte[c] == meilleur)
+    retenu = codes[idx]
+    return retenu, meilleur / len(codes), idx
+
+
 # Politiques de décision en cas de désaccord entre les deux runs.
 POLITIQUES = ("run_a", "run_b", "erreur_prioritaire", "correct_prioritaire")
 

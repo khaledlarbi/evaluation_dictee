@@ -29,7 +29,9 @@ approach: two_stage
 
 # Étape 1 = transcription (doit être multimodal pour lire l'image).
 model:
-  name: qwen3-6-35b-moe # gemma4-26b-moe
+  # Lecteur principal : meilleur lecteur seul mesuré le 13/11/2026 sur 50 copies
+  # (kappa 0,687 contre 0,650 pour qwen3-6-35b-moe et 0,629 pour gemma4-26b-moe).
+  name: qwen3-8-27b
   kind: vlm
   temperature: 0.0
   max_tokens: 16384
