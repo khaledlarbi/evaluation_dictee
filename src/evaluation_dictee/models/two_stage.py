@@ -26,25 +26,16 @@ from evaluation_dictee.models.vlm import (
     log_if_truncated,
     thinking_kwargs,
 )
+from evaluation_dictee.pipeline.alignement_local import Alignement, aligner, tokeniser
 from evaluation_dictee.pipeline.alignment import best_realignment, needs_realignment
 from evaluation_dictee.pipeline.prompts import (
     PROMPT_TRANSCRIPTION_PASSE1,
-    PROMPT_TRANSCRIPTION_PASSE2,
     attach_image,
     build_text_coding_aligned_prompt,
     build_text_coding_prompt,
     build_transcription_passe1_prompt,
-    build_transcription_passe2_prompt,
     build_transcription_prompt,
     fetch_prompt,
-)
-from evaluation_dictee.pipeline.transcription_epelee import (
-    Alignement,
-    formater_mots_lus,
-    lignes_depuis_reponse,
-    lignes_vers_texte,
-    mots_lus,
-    valider_alignement,
 )
 from evaluation_dictee.utils.logging import get_logger
 
@@ -57,52 +48,27 @@ _TRANSCRIPTION_SCHEMA: dict[str, Any] = {
     "required": ["transcription"],
 }
 
-# Transcription en deux passes (option `transcription_verification`).
-# Passe 1 : éléments épelés (« p e r d u »), une liste par ligne de la copie.
+# Passe 1 de l'option `transcription_verification` (transcription aveugle + incertains),
+# suivie d'un alignement local sur les items (`pipeline/alignement_local.py`).
 _PASSE1_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "lignes": {
-            "type": "array",
-            "items": {"type": "array", "items": {"type": "string"}},
-        },
         "incertains": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "ligne": {"type": "integer"},
-                    "position": {"type": "integer"},
+                    "mot": {"type": "string"},
                     "lettres_vues": {"type": "string"},
                     "variantes": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["ligne", "position", "lettres_vues", "variantes"],
+                "required": ["mot", "lettres_vues", "variantes"],
             },
         },
+        "transcription": {"type": "string"},
     },
-    "required": ["lignes", "incertains"],
-}
-
-# Passe 2 : alignement (texte seul) ; « attendu » est recopié pour aider le modèle à
-# suivre sa position dans la dictée, « lus » ne contient que des numéros de mots lus.
-_PASSE2_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "alignement": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "item_id": {"type": "string"},
-                    "attendu": {"type": "string"},
-                    "lus": {"type": "array", "items": {"type": "integer"}},
-                },
-                "required": ["item_id", "attendu", "lus"],
-            },
-        },
-        "mots_en_trop": {"type": "array", "items": {"type": "integer"}},
-    },
-    "required": ["alignement", "mots_en_trop"],
+    # `incertains` AVANT `transcription` : l'hésitation est décrite avant d'écrire le texte.
+    "required": ["incertains", "transcription"],
 }
 
 
@@ -135,18 +101,8 @@ def _parse_json_object(content: str) -> dict[str, Any] | None:
 class _ResultatPasse:
     """Sortie parsée d'une passe de transcription."""
 
-    # Texte destiné au codage : état final (ratures résolues), sans marque « [?] ».
     transcription: str
     n_incertains: int | None = None
-    n_corrections: int | None = None
-    # Format épelé : éléments recollés par ligne, texte annoté (diagnostic) et
-    # entrées « incertains » de la passe 1.
-    lignes: list[list[str]] | None = None
-    annotee: str | None = None
-    incertains: list[dict[str, Any]] | None = None
-    # Passe 2 (alignement) : mot écrit par item ("" si absent) et diagnostics.
-    ecrits: dict[str, str] | None = None
-    alignement: Alignement | None = None
 
 
 def _request_kwargs(
@@ -386,105 +342,56 @@ class TwoStageScorer(Scorer):
             )
         return None, n_essais
 
-    def _parse_passe1(self, content: str) -> _ResultatPasse | None:
-        """Parse la passe 1 épelée et reconstruit le texte (le modèle ne recolle jamais).
+    @staticmethod
+    def _parse_passe1(content: str) -> _ResultatPasse | None:
+        """Parse la réponse de la passe 1 (transcription à l'aveugle + incertains).
 
         Args:
             content: Contenu textuel brut renvoyé par le modèle.
 
         Returns:
-            Le résultat parsé, ou None si « lignes » est absent ou vide (nouvel essai).
+            Le résultat parsé ; repli sur le texte brut si le JSON est illisible.
         """
         data = _parse_json_object(content)
         if data is None:
-            return None
-        lignes = lignes_depuis_reponse(data)
-        if lignes is None:
-            return None
+            # Même repli que l'étape 1 historique : texte brut pris tel quel.
+            return _ResultatPasse(transcription=content.strip()) if content.strip() else None
         incertains = data.get("incertains")
-        incertains = (
-            [i for i in incertains if isinstance(i, dict)] if isinstance(incertains, list) else []
-        )
-        final = self.prompt_config.read_final_state
         return _ResultatPasse(
-            transcription=lignes_vers_texte(lignes, final=final, garder_marques=False),
-            n_incertains=len(incertains),
-            lignes=lignes,
-            annotee=lignes_vers_texte(lignes, final=False, garder_marques=True),
-            incertains=incertains,
+            transcription=str(data.get("transcription", "")).strip(),
+            n_incertains=len(incertains) if isinstance(incertains, list) else None,
         )
 
-    def _transcribe_deux_passes(
+    def _transcribe_et_aligner(
         self, copy: Copy
-    ) -> tuple[str, int, _ResultatPasse | None, _ResultatPasse | None]:
-        """Transcription en deux passes : épelée à l'aveugle, puis alignement sur la dictée.
-
-        La passe 2 (texte seul) associe chaque item aux numéros des mots lus ; le code
-        valide l'alignement. Si elle échoue, le codage repart du texte de la passe 1 (la
-        copie reste codable, avec l'ancien codage qui aligne lui-même).
+    ) -> tuple[str, int, _ResultatPasse | None, Alignement | None]:
+        """Passe 1 (lecture à l'aveugle avec l'image), puis alignement LOCAL sur les items.
 
         Args:
             copy: Copie dont l'image est à transcrire.
 
         Returns:
-            (transcription retenue, nb total de tentatives, résultat passe 1, résultat
-            passe 2) ; transcription vide si la passe 1 a échoué.
+            (transcription, nb de tentatives, résultat passe 1, alignement) ;
+            transcription vide et alignement None si la passe 1 a échoué.
         """
         image_url = _image_to_data_url(load_image(copy.image_path))
-        read_final = self.prompt_config.read_final_state
         passe1, n1 = self._appel_image(
             copy,
-            build_transcription_passe1_prompt(read_final_state=read_final),
+            build_transcription_passe1_prompt(read_final_state=self.prompt_config.read_final_state),
             image_url,
             _PASSE1_SCHEMA,
             "transcription_passe1",
             self._parse_passe1,
-            "Passe 1 (transcription épelée)",
+            "Passe 1 (transcription aveugle)",
             PROMPT_TRANSCRIPTION_PASSE1,
         )
-        if passe1 is None or passe1.lignes is None:
+        if passe1 is None:
             return "", n1, None, None
-
         items = [self._items_by_id[i] for i in copy.item_ids if i in self._items_by_id]
-        lus = mots_lus(passe1.lignes, final=True)
-        if not lus or not items:
-            logger.warning("Rien à aligner pour %s : passe 2 sautée.", copy.copy_id)
+        mots = tokeniser(passe1.transcription)
+        if not mots or not items:
             return passe1.transcription, n1, passe1, None
-
-        texte_p1 = passe1.transcription
-
-        def _parse_passe2(content: str) -> _ResultatPasse | None:
-            data = _parse_json_object(content)
-            if data is None:
-                return None
-            alignement = valider_alignement(data, items, lus)
-            if alignement is None:
-                return None
-            return _ResultatPasse(
-                transcription=texte_p1,
-                ecrits={it.item_id: alignement.ecrit(it.item_id, lus) for it in items},
-                alignement=alignement,
-            )
-
-        # Texte seul (pas d'image) : modèle de l'étape 2, celui qui sait lire du texte.
-        passe2, n2 = self._appel_image(
-            copy,
-            build_transcription_passe2_prompt(mots_lus=formater_mots_lus(lus), items=items),
-            None,
-            _PASSE2_SCHEMA,
-            "alignement_passe2",
-            _parse_passe2,
-            "Passe 2 (alignement)",
-            PROMPT_TRANSCRIPTION_PASSE2,
-            model_config=self.model_config_stage2,
-        )
-        if passe2 is None:
-            logger.warning(
-                "Passe 2 (alignement) en échec pour %s : codage depuis le texte de la passe 1.",
-                copy.copy_id,
-            )
-            return passe1.transcription, n1 + n2, passe1, None
-        return passe2.transcription, n1 + n2, passe1, passe2
+        return passe1.transcription, n1, passe1, aligner(mots, items)
 
     # ── Étape 2 : codage du texte transcrit ──────────────────────────────────
     def _code_text(
@@ -502,7 +409,7 @@ class TwoStageScorer(Scorer):
             copy: Copie évaluée (fournit la liste d'items à coder).
             reference_text: Texte de référence de la dictée.
             transcription: Transcription produite à l'étape 1.
-            ecrits: alignement de la passe 2 (mot écrit par item) ; si fourni, le
+            ecrits: alignement local (mot écrit par item) ; si fourni, le
                 modèle code des paires déjà alignées au lieu d'aligner lui-même.
 
         Returns:
@@ -558,7 +465,7 @@ class TwoStageScorer(Scorer):
         Args:
             copy: Copie évaluée (fournit la liste d'items attendus).
             content: Contenu textuel brut renvoyé par le modèle à l'étape 2.
-            ecrits: alignement de la passe 2 ; s'il est fourni, pas de ré-alignement
+            ecrits: alignement local ; s'il est fourni, pas de ré-alignement
                 (déjà fait) et la transcription de chaque item est celle de l'alignement.
 
         Returns:
@@ -632,9 +539,9 @@ class TwoStageScorer(Scorer):
             `raw_transcription`.
         """
         passe1: _ResultatPasse | None = None
-        passe2: _ResultatPasse | None = None
+        alignement: Alignement | None = None
         if self.prompt_config.transcription_verification:
-            transcription, n_attempts, passe1, passe2 = self._transcribe_deux_passes(copy)
+            transcription, n_attempts, passe1, alignement = self._transcribe_et_aligner(copy)
         else:
             transcription, n_attempts = self._transcribe(copy)
 
@@ -650,16 +557,14 @@ class TwoStageScorer(Scorer):
                 n_attempts=n_attempts,
             )
 
-        ecrits = passe2.ecrits if passe2 is not None else None
+        ecrits = alignement.ecrits() if alignement is not None else None
         prediction = self._code_text(copy, reference_text or "", transcription, ecrits)
         prediction.n_attempts = n_attempts
         prediction.raw_transcription = transcription
         if passe1 is not None:
-            # Version annotée (ratures, « [?] ») : diagnostic de la lecture brute.
-            prediction.transcription_passe1 = passe1.annotee or passe1.transcription
+            prediction.transcription_passe1 = passe1.transcription
             prediction.n_incertains_passe1 = passe1.n_incertains
-        if passe2 is not None and passe2.alignement is not None:
-            prediction.n_absents_alignement = passe2.alignement.n_absents()
-            prediction.n_mots_en_trop_alignement = len(passe2.alignement.mots_en_trop)
-            prediction.n_reparations_alignement = passe2.alignement.n_reparations
+        if alignement is not None:
+            prediction.n_absents_alignement = alignement.n_absents()
+            prediction.n_mots_en_trop_alignement = len(alignement.mots_en_trop)
         return prediction

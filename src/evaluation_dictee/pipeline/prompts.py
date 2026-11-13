@@ -15,17 +15,13 @@ from langfuse.model import ChatMessageDict, ChatPromptClient
 
 from evaluation_dictee.config import PromptConfig
 from evaluation_dictee.data.grid import GridItem
-from evaluation_dictee.pipeline.transcription_epelee import formater_items_attendus
 
 # Noms sous lesquels les prompts sont versionnés dans Langfuse.
 PROMPT_DICTATION = "Dictation"
 PROMPT_TRANSCRIPTION = "Transcription"
 PROMPT_TEXT_CODING = "Text coding"
 # Transcription en deux passes (option `transcription_verification`).
-# Noms distincts des anciennes versions (texte libre, vérification avec référence) :
-# Langfuse servirait sinon l'ancien prompt, au format de sortie incompatible.
-PROMPT_TRANSCRIPTION_PASSE1 = "Transcription pass 1 spelled"
-PROMPT_TRANSCRIPTION_PASSE2 = "Transcription pass 2 alignment"
+PROMPT_TRANSCRIPTION_PASSE1 = "Transcription pass 1"
 PROMPT_TEXT_CODING_ALIGNE = "Text coding aligned"
 
 _GRILLE_SIMPLIFIEE = (
@@ -316,54 +312,35 @@ _TEMPLATE_TEXT_CODING: list[ChatMessageDict] = [
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Transcription en deux passes (option `transcription_verification`).
-# Passe 1 : transcription ÉPELÉE à l'aveugle (lettre par lettre), une liste par ligne ;
-#   le texte est recollé par le code (`pipeline/transcription_epelee.py`), jamais par
-#   le modèle, qui en profiterait pour corriger l'élève.
-# Passe 2 : alignement (texte seul) des mots lus, numérotés, sur les items de la
-#   dictée ; le modèle ne rend que des numéros, le codage part des paires alignées.
+# Transcription + alignement (option `transcription_verification`).
+# Passe 1 : transcription à l'aveugle, mots incertains signalés (prompt d'origine).
+# Puis alignement LOCAL (`pipeline/alignement_local.py`, Needleman-Wunsch, sans LLM)
+# des mots lus sur les items, et codage des paires (attendu, écrit) déjà alignées.
 # ─────────────────────────────────────────────────────────────────────────────
-
-_SYSTEME_LECTEUR = "Tu lis l'écriture manuscrite d'enfants, lettre par lettre.\n"
 
 _TEMPLATE_TRANSCRIPTION_PASSE1: list[ChatMessageDict] = [
     {
         "role": "system",
         "content": (
-            _SYSTEME_LECTEUR
-            + "On te montre l'image d'un texte écrit à la main par un élève de primaire. "
-            "Ce texte contient des fautes d'orthographe, et c'est précisément ce qu'on "
-            "veut relever.\n\n"
-            "Ta tâche : pour chaque mot, épeler les lettres que tu VOIS, une par une, "
-            "séparées par des espaces.\n\n"
-            "Règles :\n"
-            "1 - Épelle uniquement les lettres présentes sur la feuille. N'ajoute pas une "
-            "lettre parce que la grammaire l'exigerait, et n'en retire pas une parce "
-            "qu'elle semble en trop.\n"
-            "2 - Pour chaque lettre, regarde le tracé et non le sens du mot. Fais "
-            "particulièrement attention à la fin des mots, aux accents (é, è, ê, à ou "
-            "absence d'accent), aux cédilles et aux apostrophes.\n"
-            "3 - MAJUSCULES : épelle chaque lettre avec sa casse EXACTE. Ne perds aucune "
-            "majuscule : regarde la PREMIÈRE lettre de CHAQUE mot et demande-toi si elle "
-            "est tracée en majuscule (plus haute, forme différente : L, M, S, I, J, C...). "
-            "C'est le cas en particulier au début de la copie, après un point, après un "
-            "tiret de dialogue et pour les noms propres. Inversement, une minuscule reste "
-            "une minuscule même si une majuscule serait attendue : « l e s » en début de "
-            "phrase si l'élève a écrit un l minuscule.\n"
-            "4 - L'apostrophe et le trait d'union sont des caractères comme les autres : "
-            "« n ' é t a i e n t », « p e u t - ê t r e ».\n"
-            '5 - Chaque signe de ponctuation est un élément séparé : ".", ",", "?", "!", '
-            '"-" (tiret de dialogue).\n'
-            '6 - Une ligne de la copie = une liste dans "lignes". Respecte l\'ordre exact.\n'
-            "7 - Si tu hésites sur une lettre, épelle la lecture la plus probable, ajoute "
-            '" [?]" à la fin du mot et décris l\'hésitation dans "incertains".\n'
-            "{{consigne_ratures}}\n"
-            "Exemple (copie différente, pour illustrer le format) :\n"
-            "Sur la feuille : « Les enfant sont partit a l'ecole. »\n"
-            'Bonne réponse : ["L e s", "e n f a n t", "s o n t", "p a r t i t", "a", '
-            '"l \' e c o l e", "."]\n'
-            'Mauvaise réponse : ["L e s", "e n f a n t s", "s o n t", "p a r t i s", "à", '
-            '"l \' é c o l e", "."], parce qu\'elle corrige l\'élève.'
+            "Tu es un expert en lecture d'écriture manuscrite d'enfants.\n"
+            "On te montre l'image manuscrite de la dictée d'un élève de primaire.\n\n"
+            "Règles à respecter impérativement :\n"
+            "1 - Transcris EXACTEMENT le texte écrit par l'élève, FAUTES D'ORTHOGRAPHE "
+            "COMPRISES.\n"
+            "2 - Ne corrige rien, ne complète rien, ne réordonne rien. Ne devine pas le "
+            "texte attendu : si un mot est mal écrit, recopie-le mal écrit.\n"
+            "3 - Reproduis fidèlement les erreurs, y compris les accents manquants ou en "
+            "trop, les lettres manquantes ou en trop, les majuscules et la ponctuation.\n"
+            "4 - Respecte l'ordre exact des éléments écrits sur la copie (mots, "
+            "ponctuation, chiffres, tirets de dialogue...).\n"
+            "5 - Lis lettre par lettre, pas mot par mot. Regarde en particulier la fin de "
+            "chaque mot (s, x, e, es, é, er, ez, ait, aient, nt), les accents, les "
+            "cédilles et les apostrophes.\n"
+            "6 - Respecte les retours à la ligne de la copie, en les écrivant \\n dans "
+            "le JSON.\n"
+            "7 - Si tu hésites sur un mot, écris dans la transcription la lecture la plus "
+            'probable suivie de [?], et décris ton hésitation dans "incertains".\n'
+            "{{consigne_ratures}}"
         ),
     },
     {
@@ -371,87 +348,18 @@ _TEMPLATE_TRANSCRIPTION_PASSE1: list[ChatMessageDict] = [
         "content": (
             "Réponds UNIQUEMENT par un objet JSON, sans texte autour, de la forme :\n"
             "{\n"
-            '  "lignes": [\n'
-            '    ["m o t", "m o t", "."],\n'
-            '    ["m o t", ","]\n'
-            "  ],\n"
             '  "incertains": [\n'
-            '    {"ligne": 1, "position": 2, "lettres_vues": "description du tracé", '
-            '"variantes": ["autre lecture possible"]}\n'
-            "  ]\n"
-            "}\n"
-            '"ligne" et "position" commencent à 1. Si aucun mot n\'est incertain, '
-            '"incertains" est une liste vide.'
-        ),
-    },
-]
-
-# Méthode d'alignement imposée au modèle : ancres (plus longue sous-séquence commune)
-# puis alignement de Needleman-Wunsch entre deux ancres. Sans méthode explicite, un mot
-# oublié par l'élève décale tous les items suivants (erreur en chaîne mesurée sur la
-# méthode C, cf. _CONSIGNE_VOISINAGE).
-_TEMPLATE_TRANSCRIPTION_PASSE2: list[ChatMessageDict] = [
-    {
-        "role": "system",
-        "content": (
-            "Tu alignes la transcription d'une dictée d'élève sur le texte de la dictée.\n"
-            "On te donne deux listes, dans l'ordre :\n"
-            "- les MOTS LUS sur la copie de l'élève, numérotés, fautes comprises ;\n"
-            "- les ITEMS ATTENDUS de la dictée (un mot ou un signe de ponctuation par item).\n"
-            "L'élève a pu oublier des mots, en ajouter, en couper un en deux ou en coller "
-            "deux ensemble, et ses mots contiennent des fautes. Ta tâche : dire, pour chaque "
-            "item attendu, quel(s) numéro(s) de mot lu lui correspondent. Tu ne juges PAS "
-            "l'orthographe et tu ne recopies AUCUN mot : tu rends seulement des numéros.\n\n"
-            "Méthode à appliquer, dans cet ordre :\n"
-            "1 - ANCRES. Repère les paires sûres : un mot lu identique à un item attendu, "
-            "sans tenir compte des accents ni des majuscules (« ecole » = « école »). Garde "
-            "parmi elles la plus longue suite qui respecte l'ordre des deux listes (plus "
-            "longue sous-séquence commune) : une ancre ne doit jamais en croiser une autre. "
-            "Les mots longs et rares font de meilleures ancres que « le », « de » ou « , ».\n"
-            "2 - ENTRE DEUX ANCRES, aligne les mots restants avec la méthode de "
-            "Needleman-Wunsch : chaque mot lu est soit apparié à un item (substitution, "
-            "d'autant plus plausible que les deux mots partagent des lettres, le même début "
-            "ou le même son : « partit » ↔ « partis », « et » ↔ « est »), soit laissé sans "
-            "item (mot ajouté) ; chaque item est soit apparié, soit laissé vide (mot "
-            "oublié). Préfère un trou à un appariement entre deux mots sans rapport.\n"
-            "3 - UN OUBLI EST UN TROU, PAS UN DÉCALAGE. Si l'élève a sauté un mot, cet item "
-            'reçoit "lus": [] et l\'item suivant reprend le bon mot lu. Ne décale jamais la '
-            "suite pour combler un trou.\n"
-            "4 - Mot coupé (« re trouver » pour « retrouver ») : l'item reçoit les deux "
-            "numéros consécutifs. Mots collés (« nousles » pour « nous les ») : les deux "
-            "items consécutifs reçoivent le même numéro.\n"
-            "5 - Un item de ponctuation ne s'apparie qu'à un signe de ponctuation lu. Pas "
-            'de signe à cet endroit : "lus": [].\n'
-            "6 - Les élisions sont des items séparés : « n' » et « étaient » sont deux items, "
-            "et deux mots lus.\n"
-            "7 - VÉRIFICATION FINALE : en parcourant les items dans l'ordre, les numéros "
-            "doivent croître (sauf le partage d'un numéro par deux items consécutifs). "
-            "Chaque item apparaît exactement une fois. Les mots lus qui ne sont associés à "
-            'aucun item vont dans "mots_en_trop".'
-        ),
-    },
-    {
-        "role": "user",
-        "content": (
-            "# MOTS LUS sur la copie :\n"
-            "{{mots_lus}}\n\n"
-            "# ITEMS ATTENDUS ({{n_items}} items) :\n"
-            "{{items_attendus}}\n\n"
-            "Réponds UNIQUEMENT par un objet JSON, sans texte autour, de la forme :\n"
-            "{\n"
-            '  "alignement": [\n'
-            '    {"item_id": "...", "attendu": "mot attendu", "lus": [3]},\n'
-            '    {"item_id": "...", "attendu": "mot oublié par l\'élève", "lus": []}\n'
+            '    {"mot": "lecture retenue", "lettres_vues": "description lettre par '
+            'lettre de ce qui est écrit", "variantes": ["autre lecture possible"]}\n'
             "  ],\n"
-            '  "mots_en_trop": [7]\n'
+            '  "transcription": "le texte exact écrit par l\'élève"\n'
             "}\n"
-            '"alignement" contient EXACTEMENT {{n_items}} entrées, une par item attendu, '
-            "dans l'ordre."
+            'Si aucun mot n\'est incertain, "incertains" est une liste vide.'
         ),
     },
 ]
 
-# Codage textuel à partir de l'alignement de la passe 2 : le modèle n'a plus à aligner,
+# Codage textuel à partir de l'alignement local : le modèle n'a plus à aligner,
 # seulement à comparer chaque paire (mot attendu, mot écrit).
 _TEMPLATE_TEXT_CODING_ALIGNE: list[ChatMessageDict] = [
     {
@@ -492,7 +400,6 @@ PROMPT_TEMPLATES: dict[str, list[ChatMessageDict]] = {
     PROMPT_TRANSCRIPTION: _TEMPLATE_TRANSCRIPTION,
     PROMPT_TEXT_CODING: _TEMPLATE_TEXT_CODING,
     PROMPT_TRANSCRIPTION_PASSE1: _TEMPLATE_TRANSCRIPTION_PASSE1,
-    PROMPT_TRANSCRIPTION_PASSE2: _TEMPLATE_TRANSCRIPTION_PASSE2,
     PROMPT_TEXT_CODING_ALIGNE: _TEMPLATE_TEXT_CODING_ALIGNE,
 }
 
@@ -793,40 +700,23 @@ def build_transcription_prompt(read_final_state: bool = True) -> list[ChatMessag
     )
 
 
-# Corps de la consigne « ratures » des deux passes, adapté au format épelé. Elle CONSERVE
-# les ratures au lieu de les ignorer : l'état final (décision DEPP) est reconstruit par
-# le code (`transcription_epelee.etat_final`) avant le codage, et la passe 1 garde ainsi
-# une trace de ce que l'élève a barré.
-_CORPS_RATURES_EPELE = (
-    "Conserve les ratures et corrections de l'élève :\n"
-    '- mot barré : élément séparé entre ~~ ~~, par exemple "~~M a m a n~~"\n'
-    '- ajout au-dessus ou en dessous de la ligne : élément "[ajout: m o t]" placé là où '
-    "il s'insère\n"
-    "- lettre réécrite par-dessus une autre : {ancienne→nouvelle} dans le mot, par "
-    'exemple "p e r d {a→e}"\n'
-    '- passage illisible : élément "[illisible]"\n'
-)
-
-
-def _consigne_ratures_deux_passes(read_final_state: bool, numero: int) -> str:
-    """Consigne « ratures » de la passe 1 (la passe 2, texte seul, reçoit l'état final).
+def _consigne_ratures_passe1(read_final_state: bool) -> str:
+    """Consigne « ratures » de la passe 1 (décision DEPP : état final).
 
     Args:
-        read_final_state: si True, la consigne est injectée (décision DEPP : état final,
-            reconstruit par le code à partir des annotations).
-        numero: numéro de la règle dans le prompt de la passe.
+        read_final_state: si True, consigne de ne lire que l'état final.
 
     Returns:
         Le bloc à injecter dans `{{consigne_ratures}}`, vide si l'option est inactive.
     """
-    return f"{numero} - {_CORPS_RATURES_EPELE}" if read_final_state else ""
+    return ("Ratures : " + _CONSIGNE_RATURES_TRANSCRIPTION) if read_final_state else ""
 
 
 def build_transcription_passe1_prompt(read_final_state: bool = True) -> list[ChatMessageDict]:
-    """Prompt PASSE 1 : transcription épelée à l'aveugle (sans référence).
+    """Prompt PASSE 1 : transcription à l'aveugle (sans référence), mots incertains signalés.
 
     Args:
-        read_final_state: si True, ajoute la consigne d'annotation des ratures.
+        read_final_state: si True, ajoute la consigne de ne lire que l'état final (ratures).
 
     Returns:
         Les messages du prompt compilés, prêts à recevoir l'image.
@@ -834,30 +724,7 @@ def build_transcription_passe1_prompt(read_final_state: bool = True) -> list[Cha
     return _compile_prompt(
         PROMPT_TRANSCRIPTION_PASSE1,
         fallback=_TEMPLATE_TRANSCRIPTION_PASSE1,
-        variables={"consigne_ratures": _consigne_ratures_deux_passes(read_final_state, 8)},
-    )
-
-
-def build_transcription_passe2_prompt(
-    mots_lus: str, items: list[GridItem]
-) -> list[ChatMessageDict]:
-    """Prompt PASSE 2 : alignement des mots lus sur les items (texte seul, sans image).
-
-    Args:
-        mots_lus: bloc des mots lus numérotés (`transcription_epelee.formater_mots_lus`).
-        items: items de la grille, dans l'ordre.
-
-    Returns:
-        Les messages du prompt compilés.
-    """
-    return _compile_prompt(
-        PROMPT_TRANSCRIPTION_PASSE2,
-        fallback=_TEMPLATE_TRANSCRIPTION_PASSE2,
-        variables={
-            "mots_lus": mots_lus,
-            "items_attendus": formater_items_attendus(items),
-            "n_items": len(items),
-        },
+        variables={"consigne_ratures": _consigne_ratures_passe1(read_final_state)},
     )
 
 

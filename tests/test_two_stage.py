@@ -169,95 +169,60 @@ _CODAGE_OK = json.dumps(
 )
 
 
-_PASSE1_EPELEE = json.dumps(
-    {
-        "lignes": [["L e", "s o i r e [?]", "t o m b a i t"]],
-        "incertains": [
-            {"ligne": 1, "position": 2, "lettres_vues": "s-o-i-r-e", "variantes": ["s o i r"]}
-        ],
-    }
-)
-
-
-def _alignement(lus: list[list[int]], en_trop: list[int] | None = None) -> str:
-    return json.dumps(
-        {
-            "alignement": [
-                {"item_id": it.item_id, "attendu": it.attendu, "lus": n}
-                for it, n in zip(ITEMS, lus, strict=True)
-            ],
-            "mots_en_trop": en_trop or [],
-        }
-    )
+def _passe1(transcription: str, incertains: list | None = None) -> str:
+    return json.dumps({"incertains": incertains or [], "transcription": transcription})
 
 
 def test_deux_passes_nominal(monkeypatch) -> None:
+    incertains = [{"mot": "soire", "lettres_vues": "s-o-i-r-e", "variantes": ["soir"]}]
     scorer = _make_scorer_deux_passes(
-        [_PASSE1_EPELEE, _alignement([[1], [2], [3]]), _CODAGE_OK], monkeypatch
+        [_passe1("Le soire[?] tombait", incertains), _CODAGE_OK], monkeypatch
     )
     pred = scorer.score_copy(_copy(), "Le soir tombait")
 
     appels = scorer.client.appels
-    assert len(appels) == 3
-    # Passe 1 à l'aveugle : la référence n'apparaît pas.
+    # Passe 1 (image) puis codage : l'alignement est local, sans appel LLM.
+    assert len(appels) == 2
     assert "Le soir tombait" not in json.dumps(appels[0]["messages"], ensure_ascii=False)
-    # Passe 2 : texte seul (pas d'image), mots lus numérotés + items attendus.
-    user_p2 = appels[1]["messages"][-1]["content"]
-    assert isinstance(user_p2, str)
-    assert "2. soire" in user_p2 and "i2 → « soir »" in user_p2
-    # Codage : paires déjà alignées.
-    texte_codage = json.dumps(appels[2]["messages"], ensure_ascii=False)
+    assert appels[0]["messages"][-1]["content"][1]["type"] == "image_url"
+    texte_codage = json.dumps(appels[1]["messages"], ensure_ascii=False)
     assert "« soir » (mot) | écrit : « soire »" in texte_codage
 
-    assert pred.raw_transcription == "Le soire tombait"
+    assert pred.raw_transcription == "Le soire[?] tombait"
     assert pred.transcription_passe1 == "Le soire[?] tombait"
     assert [it.transcription for it in pred.items] == ["Le", "soire", "tombait"]
+    assert pred.n_incertains_passe1 == 1
     assert pred.n_absents_alignement == 0
-    assert pred.n_reparations_alignement == 0
-    assert pred.n_attempts == 2
+    assert pred.n_mots_en_trop_alignement == 0
+    assert pred.n_attempts == 1
 
 
 def test_deux_passes_mot_oublie_ne_decale_pas(monkeypatch) -> None:
-    passe1 = json.dumps({"lignes": [["L e", "t o m b a i t"]], "incertains": []})
-    scorer = _make_scorer_deux_passes(
-        [passe1, _alignement([[1], [], [2]]), _CODAGE_OK], monkeypatch
-    )
+    scorer = _make_scorer_deux_passes([_passe1("Le tombait"), _CODAGE_OK], monkeypatch)
     pred = scorer.score_copy(_copy(), "Le soir tombait")
     assert "« soir » (mot) | écrit : (rien)" in json.dumps(
-        scorer.client.appels[2]["messages"], ensure_ascii=False
+        scorer.client.appels[1]["messages"], ensure_ascii=False
     )
     assert [it.transcription for it in pred.items] == ["Le", "", "tombait"]
     assert pred.n_absents_alignement == 1
 
 
-def test_deux_passes_echec_passe2_repli_texte(monkeypatch) -> None:
-    passe1 = json.dumps({"lignes": [["L e", "s o i r e", "t o m b a i t"]], "incertains": []})
-    # max_retries=1 → deux essais de passe 2, tous deux illisibles.
-    scorer = _make_scorer_deux_passes(
-        [passe1, "pas du json", "toujours pas", _CODAGE_OK], monkeypatch
-    )
+def test_deux_passes_echec_passe1(monkeypatch) -> None:
+    # max_retries=1 → deux essais de passe 1, réponses vides.
+    scorer = _make_scorer_deux_passes(["", ""], monkeypatch)
     pred = scorer.score_copy(_copy(), "Le soir tombait")
-    assert pred.raw_transcription == "Le soire tombait"
-    assert pred.n_absents_alignement is None
-    # Repli : ancien prompt de codage, qui reçoit la transcription en texte continu.
-    assert "Le soire tombait" in json.dumps(scorer.client.appels[3]["messages"], ensure_ascii=False)
-    assert pred.n_attempts == 3
+    assert pred.transcribed is False
+    assert pred.n_attempts == 2
 
 
-def test_passe1_insiste_sur_les_majuscules() -> None:
-    from evaluation_dictee.pipeline.prompts import build_transcription_passe1_prompt
-
-    systeme = build_transcription_passe1_prompt()[0]["content"]
-    assert "MAJUSCULES" in systeme
-
-
-def test_consigne_ratures_passe1() -> None:
+def test_prompt_passe1_consigne_ratures() -> None:
     from evaluation_dictee.pipeline.prompts import (
-        _CORPS_RATURES_EPELE,
+        _CONSIGNE_RATURES_TRANSCRIPTION,
         build_transcription_passe1_prompt,
     )
 
-    p1 = build_transcription_passe1_prompt(read_final_state=True)[0]["content"]
-    assert "8 - " + _CORPS_RATURES_EPELE in p1
-    assert "{{" not in p1
-    assert _CORPS_RATURES_EPELE not in build_transcription_passe1_prompt(False)[0]["content"]
+    avec = build_transcription_passe1_prompt(read_final_state=True)[0]["content"]
+    sans = build_transcription_passe1_prompt(read_final_state=False)[0]["content"]
+    assert "Ratures : " + _CONSIGNE_RATURES_TRANSCRIPTION in avec
+    assert "Ratures" not in sans
+    assert "{{" not in avec + sans

@@ -2,16 +2,13 @@
 #  Run scoring dictée — MÉTHODE B, transcription EN DEUX PASSES
 # ═══════════════════════════════════════════════════════════════════════════
 #  Variante de dictee_two_stage.yaml (prompt.transcription_verification: true) :
-#    Passe 1 : le VLM ÉPELLE l'image à l'aveugle (sans référence), ligne par ligne,
-#              + mots incertains ; le texte est recollé par le code.
-#    Passe 2 : alignement, TEXTE SEUL (modèle model_stage2) : les mots lus, numérotés,
-#              sont associés aux items de la dictée (ancres + Needleman-Wunsch). Le
-#              modèle ne rend que des numéros ; le code valide (pas de croisement) et
-#              ramène tout item incohérent à « absent » : un oubli ne décale plus la suite.
-#    Codage : sur les paires (attendu, écrit) déjà alignées.
-#  Le codage (étape 2) part de la transcription de la passe 2.
+#    Passe 1 : le VLM transcrit l'image à l'aveugle (sans référence) + mots incertains.
+#    Alignement LOCAL, sans LLM (pipeline/alignement_local.py, Needleman-Wunsch) des
+#              mots lus sur les items : un mot oublié reste un trou isolé, il ne
+#              décale plus la suite.
+#    Codage : le LLM texte code les paires (attendu, écrit) déjà alignées.
 #  JSONL : transcription_passe1, n_incertains_passe1, n_absents_alignement,
-#          n_mots_en_trop_alignement, n_reparations_alignement.
+#          n_mots_en_trop_alignement ; transcription par item = issue de l'alignement.
 #  Bras d'expérience : export vers predictions/experimentations/ (D9).
 # ───────────────────────────────────────────────────────────────────────────
 #  Étape 1 : un VLM transcrit l'image (raw_transcription).
@@ -35,7 +32,6 @@ model:
   name: qwen3-6-35b-moe # gemma4-26b-moe
   kind: vlm
   temperature: 0.0
-  # Passe 2 : une vérification détaillée par mot de référence (~83) → budget large.
   max_tokens: 16384
   request_logprobs: true
   max_retries: 2
