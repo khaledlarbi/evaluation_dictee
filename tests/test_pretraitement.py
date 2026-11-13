@@ -88,3 +88,17 @@ def test_slug_et_nom_de_run() -> None:
         }
     )
     assert run_output_name(cfg) == "essai_qwen3-8-27b-crop"
+
+
+def test_coupes_decalees() -> None:
+    lignes = [(y, y + 40) for y in range(300, 1760, 70)]
+    page = _page(lignes)
+    normales = points_de_coupe(page, 4)
+    decalees = points_de_coupe(page, 4, decalage=0.5)
+    assert len(decalees) == 4 and decalees == sorted(decalees)
+    # Chaque coupe normale tombe entre deux coupes décalées.
+    for c, (a, b) in zip(normales, zip(decalees, decalees[1:], strict=False), strict=True):
+        assert a < c < b
+    for c in decalees:
+        assert not any(y0 <= c < y1 for y0, y1 in lignes), c
+    assert ImageConfig(recadrage=True, n_bandes=4, decalage_bandes=0.5).slug() == "crop-b4-d0p5"

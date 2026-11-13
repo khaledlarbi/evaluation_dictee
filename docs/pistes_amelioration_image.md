@@ -85,13 +85,53 @@ Lecture :
 
 1. **Épaissir légèrement les traits** avant la réduction de gemma (dilatation de
    1 px) : un trait fin en 1 bit devient un gris pâle une fois réduit. A/B sur gemma.
-2. **Relire en zoom les seuls items discordants** : bande contenant le mot (numéro
-   de ligne de l'alignement), agrandie, avec une question fermée. Cible la
-   sur-correction de qwen et les items renvoyés à l'humain.
-3. **Deuxième lecture de gemma avec des coupes décalées**, à la place de
-   qwen3-6-35b-moe (0,650) dans le vote.
-4. **Demander à la DEPP des scans en niveaux de gris**, s'ils existent en amont. La
+2. **Demander à la DEPP des scans en niveaux de gris**, s'ils existent en amont. La
    binarisation 1 bit a déjà effacé une partie des accents légers.
+
+## Essais sans gain (30 copies, 2 490 items, 13/11/2026)
+
+### Deuxième lecture de gemma, coupes décalées d'une demi-bande
+
+`image: {recadrage: true, n_bandes: 4, decalage_bandes: 0.5}`, à la place de
+qwen3-6-35b-moe dans le vote.
+
+| Vote (qwen3-8-27b, gemma 4 bandes, + …) | Kappa | Ponct. | Non détectées | Biais | Renvoi des non-unanimes | Erreur résiduelle |
+|---|---|---|---|---|---|---|
+| qwen3-6-35b-moe | 0,754 | 0,648 | 16,3 % | +0,5 pt | 17,9 % | 3,5 % |
+| gemma décalé | 0,759 | 0,620 | 12,9 % | +1,6 pt | 15,3 % | 3,9 % |
+
+Écart dans le bruit. La lecture décalée seule vaut la première (0,725 contre 0,736),
+mais elle commet 73 % des erreurs de gemma (contre 57 % pour qwen3-6-35b-moe) :
+deux lectures d'un même modèle se trompent ensemble, le vote y gagne peu.
+**On garde qwen3-6-35b-moe.**
+
+### Relecture en zoom des items non unanimes
+
+`pipeline/relecture_zoom.py`, `scripts/relecture_zoom.py` : pour chaque item où les
+trois lecteurs divergent (17,9 % des items), une bande de ≈ 4 lignes autour du mot
+(position déduite de sa ligne dans la transcription du lecteur principal, rapportée
+à l'étendue de l'écriture), une question ciblée (« recopie ce que l'élève a écrit
+entre … et … »), puis le codage habituel.
+
+- Premier essai : position rapportée à toute la hauteur du cadre. Passage trouvé
+  pour 100 % des items du premier quart, 6 % du dernier : l'écriture n'occupe en
+  médiane que 50 % du cadre (25 à 93 %). Corrigé : 99 % trouvés.
+- Sur les items relus, la relecture est **moins juste que le vote** (63 % contre
+  68 % pour gemma ; qwen3-8-27b ×2 encore en dessous au premier essai) et
+  invente des fautes (biais +4 pt quand elle tranche) : isolé de son contexte, un
+  mot paraît plus fautif.
+
+| Usage de la relecture (gemma) | Kappa | Non détectées | Biais |
+|---|---|---|---|
+| Aucun (vote à trois) | 0,754 | 16,3 % | +0,5 pt |
+| Tranche les non-unanimes | 0,744 | 10,8 % | +4,1 pt |
+| Quatrième voix | 0,758 | 10,8 % | +3,5 pt |
+
+Pour le renvoi humain, ne renvoyer que les non-unanimes où la relecture contredit
+la majorité donne 7,4 % de renvoi pour 5,7 % d'erreur résiduelle, contre 12,2 % et
+4,8 % (renvoi des seuls désaccords qwen3-8-27b/gemma) ou 17,9 % et 3,5 % pour le
+vote seul : un point un peu meilleur que l'interpolation entre ces deux-là
+(≈ 6,6 %), pour ≈ 15 appels de plus par copie. **Non retenu en l'état.**
 
 ## Points de référence du vote (50 copies, 4 150 items)
 

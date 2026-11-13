@@ -94,19 +94,22 @@ def zone_ecriture(image: Image.Image) -> tuple[int, int, int, int]:
     return boite
 
 
-def points_de_coupe(image: Image.Image, n_bandes: int) -> list[int]:
+def points_de_coupe(image: Image.Image, n_bandes: int, decalage: float = 0.0) -> list[int]:
     """Rangées où couper l'image en `n_bandes` bandes, au creux des interlignes.
 
-    Pour chaque coupe, on cherche autour de la position régulière (k × hauteur / n)
-    la rangée la moins encrée du profil horizontal lissé ; à encre égale, la plus
-    proche de la position régulière.
+    Pour chaque coupe, on cherche autour de la position régulière ((k + décalage) ×
+    hauteur / n) la rangée la moins encrée du profil horizontal lissé ; à encre égale,
+    la plus proche de la position régulière.
 
     Args:
         image: image à découper (déjà recadrée si besoin).
-        n_bandes: nombre de bandes voulu.
+        n_bandes: nombre de bandes voulu (sans décalage).
+        decalage: décalage des coupes, en fraction de hauteur de bande. Non nul, il
+            ajoute une coupe : avec 0,5, les coupes tombent au milieu des bandes non
+            décalées (n − 1 bandes pleines et deux demi-bandes aux extrémités).
 
     Returns:
-        Les n_bandes − 1 rangées de coupe, strictement croissantes.
+        Les rangées de coupe, strictement croissantes (n − 1 sans décalage, n avec).
     """
     if n_bandes <= 1 or image.height < 2 * n_bandes:
         return []
@@ -116,8 +119,9 @@ def points_de_coupe(image: Image.Image, n_bandes: int) -> list[int]:
     profil = np.convolve(a.mean(1), np.ones(k) / k, mode="same")
     fenetre = max(1, h // (3 * n_bandes))
     coupes: list[int] = []
-    for i in range(1, n_bandes):
-        cible = round(i * h / n_bandes)
+    positions = [i + decalage for i in range(n_bandes) if 0 < i + decalage < n_bandes]
+    for pos in positions:
+        cible = round(pos * h / n_bandes)
         lo = max(coupes[-1] + 1 if coupes else 1, cible - fenetre)
         hi = min(h - 1, cible + fenetre)
         if lo >= hi:
@@ -146,7 +150,7 @@ def preparer(image: Image.Image, options: ImageConfig) -> list[Image.Image]:
         return [image]
     if options.recadrage:
         image = image.crop(zone_ecriture(image))
-    coupes = points_de_coupe(image, options.n_bandes)
+    coupes = points_de_coupe(image, options.n_bandes, options.decalage_bandes)
     bornes = [0, *coupes, image.height]
     paires = zip(bornes, bornes[1:], strict=False)
     bandes = [image.crop((0, y0, image.width, y1)) for y0, y1 in paires]

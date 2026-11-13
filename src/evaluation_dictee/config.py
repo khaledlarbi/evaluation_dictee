@@ -39,6 +39,10 @@ class ImageConfig(BaseModel):
     # Découpe en bandes horizontales (coupes au creux des interlignes), envoyées comme
     # images successives d'un même appel. Utile aux modèles à budget d'image fixe (gemma).
     n_bandes: int = Field(default=1, ge=1, le=8)
+    # Décalage des coupes, en fraction de hauteur de bande (0,5 = coupes au milieu des
+    # bandes non décalées, une bande de plus). Sert à une deuxième lecture du même
+    # modèle dont les coupes, donc les erreurs, diffèrent de la première.
+    decalage_bandes: float = Field(default=0.0, ge=0.0, lt=1.0)
     # Facteur d'agrandissement (Lanczos). Utile aux modèles en pleine résolution (qwen).
     agrandissement: float = Field(default=1.0, ge=1.0, le=3.0)
 
@@ -49,6 +53,8 @@ class ImageConfig(BaseModel):
             parts.append("crop")
         if self.n_bandes > 1:
             parts.append(f"b{self.n_bandes}")
+        if self.decalage_bandes:
+            parts.append(f"d{self.decalage_bandes:g}".replace(".", "p"))
         if self.agrandissement != 1.0:
             parts.append(f"x{self.agrandissement:g}".replace(".", "p"))
         return "-".join(parts)
