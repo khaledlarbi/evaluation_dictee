@@ -50,6 +50,11 @@ class CopyPrediction:
     # "nb_incertains" déclaré).
     n_incertains_passe1: int | None = None
     n_incertains_passe2: int | None = None
+    # Passe 2 en alignement (texte seul) : items sans mot lu, mots lus sans item, et
+    # items ramenés à « absent » par la validation (alignement rendu incohérent).
+    n_absents_alignement: int | None = None
+    n_mots_en_trop_alignement: int | None = None
+    n_reparations_alignement: int | None = None
     # Raisonnement natif du modèle (champ `reasoning_content` de l'API), quand le mode
     # thinking est actif. C'est du niveau COPIE, pas de l'item : le modèle produit un
     # seul bloc pour les 83 items. Stocké à part (`<run>_reasoning.jsonl`) et jamais

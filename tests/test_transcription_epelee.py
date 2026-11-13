@@ -2,12 +2,11 @@
 
 from evaluation_dictee.data.grid import GridItem
 from evaluation_dictee.pipeline.transcription_epelee import (
-    appliquer_reponses,
-    construire_questions,
-    formater_questions,
+    formater_mots_lus,
     lignes_depuis_reponse,
     lignes_vers_texte,
-    variantes_courantes,
+    mots_lus,
+    valider_alignement,
 )
 
 
@@ -39,38 +38,54 @@ def test_ratures_resolues_vers_etat_final() -> None:
     )
 
 
-def test_variantes_courantes() -> None:
-    assert set(variantes_courantes("perdus")) >= {"perdu", "perdue", "perdues"}
-    assert set(variantes_courantes("arriver")) >= {"arrivé", "arrivez", "arrivés"}
-    assert "a" in variantes_courantes("à")
+def test_mots_lus_decoupe_elisions_et_resout_ratures() -> None:
+    lignes = [["Ils", "n'étaient", "~~pa~~", "pas"], ["perd{a→u}[?]", "."]]
+    lus = mots_lus(lignes)
+    assert [(m.numero, m.ligne, m.texte) for m in lus] == [
+        (1, 1, "Ils"),
+        (2, 1, "n'"),
+        (3, 1, "étaient"),
+        (4, 1, "pas"),
+        (5, 2, "perdu"),
+        (6, 2, "."),
+    ]
+    assert "[ligne 2 de la copie]" in formater_mots_lus(lus)
 
 
-def test_questions_contiennent_lecture_et_attendu_sans_ponctuation() -> None:
-    items = _items(["Ils", "n'", "étaient", "perdus", "."])
-    lignes = [["Ils", "n'etaient", "perdu", "."]]
-    questions = construire_questions(lignes, items, graine="c1")
-    lus = [q.lu for q in questions]
-    assert lus == ["Ils", "n'etaient", "perdu"]  # pas de question sur « . »
-    q_perdu = questions[2]
-    assert {"perdu", "perdus"} <= set(q_perdu.options)
-    assert "n'étaient" in questions[1].options
-    texte = formater_questions(questions, lignes)
-    assert "ligne 1, position 3 (entre « n'etaient » et « . »)" in texte
+def _data(items: list[GridItem], lus: list[list[int]]) -> dict:
+    return {
+        "alignement": [{"item_id": it.item_id, "lus": n} for it, n in zip(items, lus, strict=True)]
+    }
 
 
-def test_melange_reproductible() -> None:
-    items = _items(["perdus"])
-    a = construire_questions([["perdu"]], items, graine="x")
-    b = construire_questions([["perdu"]], items, graine="x")
-    assert a[0].options == b[0].options
+def test_alignement_trou_fusion_coupure() -> None:
+    items = _items(["nous", "les", "avons", "retrouvés", "."])
+    lus = mots_lus([["nousles", "re", "trouvé", "."]])
+    al = valider_alignement(_data(items, [[1], [1], [], [2, 3], [4]]), items, lus)
+    assert al is not None
+    assert [al.ecrit(it.item_id, lus) for it in items] == [
+        "nousles",
+        "nousles",
+        "",
+        "re trouvé",
+        ".",
+    ]
+    assert al.n_absents() == 1 and al.n_reparations == 0 and al.mots_en_trop == []
 
 
-def test_appliquer_reponses_lettre_et_autre() -> None:
-    items = _items(["Le", "soir"])
-    lignes = [["Le", "soir"]]
-    qs = construire_questions(lignes, items, graine="c")
-    q_soir = next(q for q in qs if q.lu == "soir")
-    reponses = [{"id": q_soir.id, "choix": "AUTRE", "epele": "s o i e r", "certain": False}]
-    res = appliquer_reponses(lignes, qs, reponses)
-    assert res.lignes == [["Le", "soier"]]
-    assert res.n_corrections == 1 and res.n_incertains == 1
+def test_alignement_croisement_ramene_a_absent() -> None:
+    items = _items(["Le", "soir", "tombait"])
+    lus = mots_lus([["Le", "soir", "tombait", "vite"]])
+    # « tombait » pointe en arrière (croisement) : ramené à absent, la suite n'en
+    # pâtit pas ; « vite » n'est associé à rien.
+    al = valider_alignement(_data(items, [[1], [2], [1]]), items, lus)
+    assert al is not None
+    assert al.lus_par_item == {"i0": [1], "i1": [2], "i2": []}
+    assert al.n_reparations == 1
+    assert al.mots_en_trop == [3, 4]
+
+
+def test_alignement_incomplet_rejete() -> None:
+    items = _items(["a", "b", "c", "d", "e"])
+    lus = mots_lus([["a", "b"]])
+    assert valider_alignement(_data(items[:2], [[1], [2]]), items, lus) is None

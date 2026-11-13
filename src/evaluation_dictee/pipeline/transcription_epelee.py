@@ -1,31 +1,24 @@
-"""Transcription épelée en deux passes : reconstruction, questions fermées, application.
+"""Transcription épelée en deux passes : reconstruction, puis alignement sur la dictée.
 
 Passe 1 : le modèle épelle chaque mot (« p e r d u »), ligne par ligne. Le texte est
 reconstruit ICI, jamais par le modèle : recoller les lettres lui-même lui redonne
 l'occasion de corriger l'élève.
-Passe 2 : pour chaque mot lu en passe 1, on propose quelques orthographes très proches
-(lecture de la passe 1, mot attendu, fautes connues de la grille, variantes
-morphologiques courantes), dans un ordre mélangé. Le texte de référence n'est JAMAIS
-envoyé au modèle : il ne sert qu'à fabriquer les choix.
+Passe 2 : le modèle (texte seul) aligne les mots lus, numérotés, sur les items de la
+dictée. Il ne rend que des NUMÉROS, jamais de mots : il ne peut donc pas corriger
+l'élève en recopiant. Le code vérifie l'alignement (ordre croissant, pas de
+croisement) et ramène à « absent » tout item incohérent, pour qu'un mot oublié reste
+un trou isolé au lieu de décaler tous les items suivants.
 """
 
 from __future__ import annotations
 
-import difflib
-import random
 import re
-import unicodedata
-import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from evaluation_dictee.data.grid import GridItem
 
 MARQUE_INCERTAIN = "[?]"
-CHOIX_AUTRE = "AUTRE"
-LETTRES_CHOIX = "ABCDEFGH"
-# Nombre maximal d'options par question (exemple du prompt : A à D).
-N_OPTIONS_MAX = 4
 
 _PONCTUATION = {".", ",", "?", "!", ";", ":", "-", "—", "–", "«", "»", '"', "(", ")", "…"}
 # Signes collés au mot précédent (pas d'espace avant) ; les autres gardent l'espace
@@ -165,98 +158,8 @@ def lignes_depuis_reponse(data: dict[str, Any]) -> list[list[str]] | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Passe 2 : variantes et questions
+# Passe 2 : alignement des mots lus sur les items de la dictée
 # ─────────────────────────────────────────────────────────────────────────────
-
-# Familles de terminaisons interchangeables (l'ordre compte : la plus longue d'abord).
-_FAMILLES_TERMINAISONS: list[list[str]] = [
-    ["ées", "és", "ée", "é", "er", "ez"],
-    ["aient", "ait", "ais", "ai"],
-    ["ues", "ue", "us", "u"],
-    ["ies", "ie", "is", "it", "i"],
-]
-
-_HOMOPHONES: list[set[str]] = [
-    {"a", "à", "as"},
-    {"ou", "où"},
-    {"et", "est", "es"},
-    {"son", "sont"},
-    {"on", "ont"},
-    {"ce", "se"},
-    {"ces", "ses", "c'est", "s'est"},
-    {"leur", "leurs"},
-    {"la", "là", "l'a"},
-    {"mes", "mais", "met", "mets"},
-    {"peu", "peut", "peux"},
-    {"sans", "s'en", "sang"},
-    {"dans", "d'en"},
-    {"ni", "n'y"},
-    {"si", "s'y"},
-    {"tout", "tous", "toute", "toutes"},
-    {"quel", "quels", "quelle", "quelles", "qu'elle", "qu'elles"},
-]
-
-_ACCENTS = {"é": "e", "è": "e", "ê": "e", "ë": "e", "à": "a", "â": "a", "î": "i", "ï": "i",
-            "ô": "o", "û": "u", "ù": "u", "ç": "c"}  # fmt: skip
-
-
-def normaliser(mot: str) -> str:
-    """Clé de comparaison : minuscules, sans accents ni marque d'hésitation."""
-    mot = sans_marque(mot).lower()
-    decompose = unicodedata.normalize("NFD", mot)
-    return "".join(c for c in decompose if unicodedata.category(c) != "Mn")
-
-
-def variantes_courantes(mot: str) -> list[str]:
-    """Fautes d'orthographe courantes autour d'un mot (accords, terminaisons, homophones).
-
-    Args:
-        mot: forme de départ (en général le mot attendu).
-
-    Returns:
-        Variantes distinctes du mot, de la plus probable à la moins probable.
-    """
-    if not mot or est_ponctuation(mot):
-        return []
-    out: list[str] = []
-    bas = mot.lower()
-    for groupe in _HOMOPHONES:
-        if bas in groupe:
-            out += sorted(groupe - {bas})
-    terminaison_trouvee = False
-    for famille in _FAMILLES_TERMINAISONS:
-        for term in famille:
-            if bas.endswith(term) and len(bas) > len(term) + 1:
-                racine = mot[: -len(term)]
-                out += [racine + t for t in famille if t != term]
-                terminaison_trouvee = True
-                break
-        if terminaison_trouvee:
-            break
-    # Accord en genre et en nombre (perdu → perdue, perdus, perdues). Pas sur les mots
-    # courts (« à » → « às ») ni sur les formes verbales en -nt (« sont » → « sonts »).
-    if len(bas) >= 3 and not bas.endswith("nt") and not terminaison_trouvee:
-        if bas.endswith("es") and len(bas) >= 4:
-            out += [mot[:-2], mot[:-1]]
-        elif bas.endswith(("s", "x")):
-            out.append(mot[:-1])
-        elif bas.endswith("e"):
-            # « perdue » → « perdu », mais pas « école » → « écol ».
-            out += [mot + "s"] + ([mot[:-1]] if bas[-2] in "aeiouéy" else [])
-        elif not bas.endswith(("es", "é", "er", "ez")):
-            out += [mot + "s", mot + "e"]
-    # Accents : forme sans accent, et e final accentué/non accentué.
-    sans_accent = "".join(_ACCENTS.get(c, c) for c in mot)
-    out.append(sans_accent)
-    return [v for v in dict.fromkeys(out) if v and v != mot]
-
-
-@dataclass
-class _Sous:
-    """Sous-partie d'un élément de la passe 1 (découpe aux apostrophes d'élision)."""
-
-    texte: str
-    item: GridItem | None = None
 
 
 def _decouper_elision(mot: str) -> list[str]:
@@ -265,226 +168,143 @@ def _decouper_elision(mot: str) -> list[str]:
     return parts if "".join(parts) == mot else [mot]
 
 
-def _ratio(a: str, b: str) -> float:
-    return difflib.SequenceMatcher(None, normaliser(a), normaliser(b)).ratio()
-
-
-def aligner(sous_parties: list[_Sous], items: list[GridItem]) -> None:
-    """Associe chaque sous-partie lue en passe 1 à un item de la référence (en place).
-
-    `difflib` aligne sur des clés normalisées (sans accents ni casse) ; dans les blocs
-    non identiques, on apparie à la position quand les longueurs concordent, sinon au
-    meilleur score de ressemblance.
-
-    Args:
-        sous_parties: sous-parties de la passe 1, dans l'ordre.
-        items: items de la grille, dans l'ordre.
-    """
-    cles_lues = [normaliser(s.texte) for s in sous_parties]
-    cles_ref = [normaliser(it.attendu) for it in items]
-    matcher = difflib.SequenceMatcher(None, cles_lues, cles_ref, autojunk=False)
-    for op, i1, i2, j1, j2 in matcher.get_opcodes():
-        if op == "equal":
-            for k in range(i2 - i1):
-                sous_parties[i1 + k].item = items[j1 + k]
-        elif op == "replace":
-            if i2 - i1 == j2 - j1:
-                for k in range(i2 - i1):
-                    sous_parties[i1 + k].item = items[j1 + k]
-                continue
-            libres = list(range(j1, j2))
-            for i in range(i1, i2):
-                if not libres:
-                    break
-                j = max(libres, key=lambda j: _ratio(sous_parties[i].texte, items[j].attendu))
-                if _ratio(sous_parties[i].texte, items[j].attendu) >= 0.5:
-                    sous_parties[i].item = items[j]
-                    # On garde l'ordre : les items à gauche de j ne sont plus disponibles.
-                    libres = [x for x in libres if x > j]
-
-
 @dataclass
-class Question:
-    """Question fermée sur un élément de la passe 1."""
+class MotLu:
+    """Un mot (ou signe) lu en passe 1, numéroté pour l'alignement."""
 
-    id: int
-    ligne: int  # 1-indexée
-    position: int  # 1-indexée
-    lu: str  # lecture de la passe 1 (sans marque)
-    options: list[str] = field(default_factory=list)
+    numero: int  # 1-indexé, dans l'ordre de lecture
+    ligne: int  # ligne de la copie, 1-indexée
+    texte: str
 
 
-def _options_pour(sous: list[_Sous], variantes_p1: list[str]) -> list[str]:
-    """Orthographes candidates d'un élément : une sous-partie varie, les autres restent.
-
-    Ordre de priorité : lecture passe 1, mot attendu, variantes signalées en passe 1,
-    fautes connues de la grille, variantes morphologiques ; plafonné à N_OPTIONS_MAX.
-    """
-    lu = "".join(s.texte for s in sous)
-    candidats: list[str] = [lu]
-    # Mot attendu complet (toutes sous-parties à leur forme attendue).
-    if all(s.item is not None for s in sous):
-        candidats.append("".join(s.item.attendu for s in sous if s.item is not None))
-    candidats += [sans_marque(v) for v in variantes_p1]
-    for idx, s in enumerate(sous):
-        if s.texte.endswith(("'", "’")):
-            continue  # élision : « l' » ne varie pas en « l's »
-        base = s.item.attendu if s.item is not None else s.texte
-        fautes: list[str] = []
-        if s.item is not None:
-            fautes = [*s.item.ex_lexicale, *s.item.ex_grammaticale, *s.item.ex_les_deux]
-        for forme in [*fautes, *variantes_courantes(base), *variantes_courantes(s.texte)]:
-            avant = "".join(x.texte for x in sous[:idx])
-            apres = "".join(x.texte for x in sous[idx + 1 :])
-            candidats.append(avant + forme + apres)
-    uniques = [c for c in dict.fromkeys(candidats) if c and " " not in c]
-    return uniques[:N_OPTIONS_MAX]
-
-
-def construire_questions(
-    lignes: list[list[str]],
-    items: list[GridItem],
-    incertains: list[dict[str, Any]] | None = None,
-    graine: str = "",
-) -> list[Question]:
-    """Construit une question fermée par mot lu en passe 1.
-
-    Les ponctuations et les éléments annotés (ratures, ajouts, illisibles) ne sont pas
-    interrogés. L'ordre des options est mélangé de façon reproductible (graine = id de
-    la copie), pour que la bonne orthographe ne soit pas toujours à la même place.
+def mots_lus(lignes: list[list[str]], final: bool = True) -> list[MotLu]:
+    """Liste à plat et numérotée des mots lus, élisions découpées comme dans la grille.
 
     Args:
-        lignes: éléments recollés de la passe 1, ligne par ligne.
-        items: items de la grille, dans l'ordre (référence : jamais montrée au modèle).
-        incertains: entrées « incertains » de la passe 1 (variantes proposées).
-        graine: chaîne servant à initialiser le mélange.
+        lignes: éléments recollés de la passe 1.
+        final: si True, ratures résolues vers l'état final (mot barré retiré, etc.).
 
     Returns:
-        Les questions, numérotées à partir de 1.
+        Les mots lus, numérotés à partir de 1.
     """
-    variantes_par_pos: dict[tuple[int, int], list[str]] = {}
-    for inc in incertains or []:
-        try:
-            cle = (int(inc["ligne"]), int(inc["position"]))
-        except (KeyError, TypeError, ValueError):
-            continue
-        variantes = inc.get("variantes") or []
-        variantes_par_pos[cle] = [recoller(str(v)) for v in variantes if str(v).strip()]
-
-    # Découpe en sous-parties et alignement global avec la référence.
-    elements: list[tuple[int, int, list[_Sous]]] = []
-    a_plat: list[_Sous] = []
+    out: list[MotLu] = []
     for li, ligne in enumerate(lignes, 1):
-        for pos, el in enumerate(ligne, 1):
-            if est_annotation(el):
-                continue
-            mot = sans_marque(el)
-            sous = [_Sous(p) for p in _decouper_elision(mot)] if mot else []
-            elements.append((li, pos, sous))
-            a_plat += sous
-    aligner(a_plat, items)
-
-    rng = random.Random(zlib.crc32(graine.encode("utf-8")))
-    questions: list[Question] = []
-    for li, pos, sous in elements:
-        lu = "".join(s.texte for s in sous)
-        if not lu or est_ponctuation(lu):
-            continue
-        options = _options_pour(sous, variantes_par_pos.get((li, pos), []))
-        if len(options) < 2:
-            continue
-        rng.shuffle(options)
-        questions.append(Question(len(questions) + 1, li, pos, lu, options))
-    return questions
+        for el in ligne:
+            el = sans_marque(el)
+            if final:
+                resolu = etat_final(el)
+                if resolu is None:
+                    continue
+                el = resolu
+            for mot in el.split():
+                for part in _decouper_elision(mot):
+                    out.append(MotLu(len(out) + 1, li, part))
+    return out
 
 
-def _voisin(lignes: list[list[str]], li: int, pos: int, delta: int) -> str | None:
-    """Élément voisin dans la transcription de la passe 1 (en traversant les lignes)."""
-    a_plat = [(i, p) for i, ligne in enumerate(lignes, 1) for p in range(1, len(ligne) + 1)]
-    k = a_plat.index((li, pos)) + delta
-    if 0 <= k < len(a_plat):
-        i, p = a_plat[k]
-        return sans_marque(lignes[i - 1][p - 1])
-    return None
+def formater_mots_lus(mots: list[MotLu]) -> str:
+    """Bloc « mots lus » du prompt : un mot numéroté par ligne, regroupés par ligne."""
+    blocs: list[str] = []
+    ligne_courante = 0
+    for m in mots:
+        if m.ligne != ligne_courante:
+            ligne_courante = m.ligne
+            blocs.append(f"[ligne {m.ligne} de la copie]")
+        blocs.append(f"  {m.numero:>3}. {m.texte}")
+    return "\n".join(blocs)
 
 
-def formater_questions(questions: list[Question], lignes: list[list[str]]) -> str:
-    """Texte des questions pour le prompt (voisins pris dans la passe 1, jamais la référence).
-
-    Args:
-        questions: questions construites par `construire_questions`.
-        lignes: éléments recollés de la passe 1.
-
-    Returns:
-        Le bloc à injecter dans `{{questions}}`.
-    """
-    blocs = []
-    for q in questions:
-        avant = _voisin(lignes, q.ligne, q.position, -1)
-        apres = _voisin(lignes, q.ligne, q.position, +1)
-        if avant and apres:
-            contexte = f" (entre « {avant} » et « {apres} »)"
-        elif avant:
-            contexte = f" (après « {avant} »)"
-        elif apres:
-            contexte = f" (avant « {apres} »)"
-        else:
-            contexte = ""
-        choix = "   ".join(f"{LETTRES_CHOIX[k]}) {opt}" for k, opt in enumerate(q.options))
-        blocs.append(f"Question {q.id} — ligne {q.ligne}, position {q.position}{contexte}\n{choix}")
-    return "\n\n".join(blocs)
+def formater_items_attendus(items: list[GridItem]) -> str:
+    """Bloc « items attendus » du prompt : identifiant et mot attendu, dans l'ordre."""
+    return "\n".join(
+        f"  {k:>3}. {it.item_id} → « {it.attendu} »"
+        + (" (ponctuation)" if it.type == "ponctuation" else "")
+        for k, it in enumerate(items, 1)
+    )
 
 
 @dataclass
-class ResultatQuestions:
-    """Application des réponses de la passe 2 aux lignes de la passe 1."""
+class Alignement:
+    """Alignement validé : pour chaque item, les numéros des mots lus associés."""
 
-    lignes: list[list[str]]
-    n_corrections: int
-    n_incertains: int
+    lus_par_item: dict[str, list[int]]
+    mots_en_trop: list[int]
+    # Items dont l'alignement rendu était incohérent (numéro inconnu, croisement) et
+    # a été ramené à « absent » ; 0 si le modèle a respecté toutes les contraintes.
+    n_reparations: int = 0
+
+    def ecrit(self, item_id: str, mots: list[MotLu]) -> str:
+        """Ce que l'élève a écrit pour cet item ("" si absent)."""
+        par_num = {m.numero: m.texte for m in mots}
+        return " ".join(par_num[n] for n in self.lus_par_item.get(item_id, []) if n in par_num)
+
+    def n_absents(self) -> int:
+        """Nombre d'items sans aucun mot lu associé."""
+        return sum(1 for nums in self.lus_par_item.values() if not nums)
 
 
-def appliquer_reponses(
-    lignes: list[list[str]], questions: list[Question], reponses: list[dict[str, Any]]
-) -> ResultatQuestions:
-    """Remplace chaque mot interrogé par l'orthographe choisie en passe 2.
+def valider_alignement(
+    data: dict[str, Any], items: list[GridItem], mots: list[MotLu], seuil: float = 0.8
+) -> Alignement | None:
+    """Vérifie et répare l'alignement rendu par le modèle ; None s'il est inexploitable.
 
-    Un choix lettré prime sur « epele » (moins sujet aux fautes de recopie) ; « AUTRE »
-    prend « epele ». Une question sans réponse exploitable garde la lecture de la passe 1.
+    Contraintes imposées : numéros existants, ordre croissant le long de la dictée (pas
+    de croisement), un même numéro partagé seulement par des items CONSÉCUTIFS (mot
+    fusionné). Un item qui viole une contrainte est ramené à « absent » plutôt que de
+    laisser une erreur se propager aux suivants.
 
     Args:
-        lignes: éléments recollés de la passe 1.
-        questions: questions posées.
-        reponses: entrées « reponses » du JSON de la passe 2.
+        data: objet JSON décodé de la réponse de la passe 2.
+        items: items de la grille, dans l'ordre.
+        mots: mots lus numérotés.
+        seuil: part minimale des items présents dans la réponse pour l'accepter.
 
     Returns:
-        Les lignes corrigées, le nombre de mots modifiés et de réponses « certain: false ».
+        L'alignement validé, ou None si trop d'items manquent (nouvel essai).
     """
-    par_id: dict[int, dict[str, Any]] = {}
-    for rep in reponses:
-        if isinstance(rep, dict):
-            try:
-                par_id[int(rep["id"])] = rep
-            except (KeyError, TypeError, ValueError):
-                continue
-    nouvelles = [list(ligne) for ligne in lignes]
-    n_corr = n_inc = 0
-    for q in questions:
-        r = par_id.get(q.id)
-        if r is None:
+    brut = data.get("alignement")
+    if not isinstance(brut, list):
+        return None
+    par_id: dict[str, list[int]] = {}
+    for entree in brut:
+        if not isinstance(entree, dict) or "item_id" not in entree:
             continue
-        if r.get("certain") is False:
-            n_inc += 1
-        choix = str(r.get("choix", "")).strip().upper()
-        retenu: str | None = None
-        if len(choix) == 1 and choix in LETTRES_CHOIX[: len(q.options)]:
-            retenu = q.options[LETTRES_CHOIX.index(choix)]
-        elif r.get("epele"):
-            retenu = recoller(str(r["epele"]))
-        if retenu and retenu != q.lu:
-            nouvelles[q.ligne - 1][q.position - 1] = retenu
-            n_corr += 1
-        elif retenu:
-            # Même mot : on retire la marque [?] éventuelle, la passe 2 a tranché.
-            nouvelles[q.ligne - 1][q.position - 1] = retenu
-    return ResultatQuestions(nouvelles, n_corr, n_inc)
+        lus = entree.get("lus") or []
+        if not isinstance(lus, list):
+            lus = [lus]
+        nums: list[int] = []
+        for n in lus:
+            try:
+                nums.append(int(n))
+            except (TypeError, ValueError):
+                continue
+        par_id[str(entree["item_id"])] = nums
+    if len(par_id) < seuil * len(items):
+        return None
+
+    valides = {m.numero for m in mots}
+    lus_par_item: dict[str, list[int]] = {}
+    dernier = 0  # plus grand numéro déjà utilisé
+    precedent: list[int] = []  # numéros de l'item précédent (fusion autorisée)
+    reparations = 0
+    for it in items:
+        nums = sorted(set(par_id.get(it.item_id, [])))
+        ok = bool(nums) and all(n in valides for n in nums)
+        if ok:
+            # Croissance : soit après tout ce qui précède, soit partage exact du
+            # dernier mot de l'item précédent (fusion « nousles »).
+            fusion = nums == [precedent[-1]] if precedent else False
+            ok = fusion or nums[0] > dernier
+            # Les numéros d'un même item doivent être consécutifs (mot coupé).
+            ok = ok and nums == list(range(nums[0], nums[-1] + 1))
+        if not ok:
+            if nums:
+                reparations += 1
+            nums = []
+        lus_par_item[it.item_id] = nums
+        if nums:
+            dernier = max(dernier, nums[-1])
+            precedent = nums
+    utilises = {n for nums in lus_par_item.values() for n in nums}
+    en_trop = [m.numero for m in mots if m.numero not in utilises]
+    return Alignement(lus_par_item, en_trop, reparations)

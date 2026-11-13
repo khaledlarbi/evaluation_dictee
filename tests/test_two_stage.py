@@ -171,70 +171,66 @@ _CODAGE_OK = json.dumps(
 
 _PASSE1_EPELEE = json.dumps(
     {
-        "lignes": [["L e", "s o i r [?]", "t o m b a i t"]],
+        "lignes": [["L e", "s o i r e [?]", "t o m b a i t"]],
         "incertains": [
-            {"ligne": 1, "position": 2, "lettres_vues": "s-o-i-r-?", "variantes": ["s o i r e"]}
+            {"ligne": 1, "position": 2, "lettres_vues": "s-o-i-r-e", "variantes": ["s o i r"]}
         ],
     }
 )
 
 
-def _passe2_choisit(scorer: TwoStageScorer, cible: str) -> str:
-    """Réponse de passe 2 qui choisit `cible` pour le mot « soir », la passe 1 ailleurs."""
-    # Reconstruit les questions avec la même graine que le scorer (id de la copie).
-    from evaluation_dictee.pipeline.transcription_epelee import (
-        construire_questions,
-        lignes_depuis_reponse,
+def _alignement(lus: list[list[int]], en_trop: list[int] | None = None) -> str:
+    return json.dumps(
+        {
+            "alignement": [
+                {"item_id": it.item_id, "attendu": it.attendu, "lus": n}
+                for it, n in zip(ITEMS, lus, strict=True)
+            ],
+            "mots_en_trop": en_trop or [],
+        }
     )
-
-    lignes = lignes_depuis_reponse(json.loads(_PASSE1_EPELEE))
-    assert lignes is not None
-    questions = construire_questions(
-        lignes, ITEMS, json.loads(_PASSE1_EPELEE)["incertains"], graine="c.png"
-    )
-    reponses = []
-    for q in questions:
-        mot = cible if q.lu == "soir" else q.lu
-        lettre = "ABCDEFGH"[q.options.index(mot)]
-        reponses.append(
-            {
-                "id": q.id,
-                "lettres_vues": "-",
-                "choix": lettre,
-                "epele": " ".join(mot),
-                "certain": True,
-            }
-        )
-    return json.dumps({"reponses": reponses})
 
 
 def test_deux_passes_nominal(monkeypatch) -> None:
-    scorer = _make_scorer_deux_passes([], monkeypatch)
-    scorer.client = _FakeClient([_PASSE1_EPELEE, _passe2_choisit(scorer, "soire"), _CODAGE_OK])
+    scorer = _make_scorer_deux_passes(
+        [_PASSE1_EPELEE, _alignement([[1], [2], [3]]), _CODAGE_OK], monkeypatch
+    )
     pred = scorer.score_copy(_copy(), "Le soir tombait")
 
     appels = scorer.client.appels
     assert len(appels) == 3
-    # Aucune des deux passes ne voit le texte de référence.
-    for appel in appels[:2]:
-        assert "Le soir tombait" not in json.dumps(appel["messages"], ensure_ascii=False)
-    # Passe 2 : image + questions fermées construites depuis la passe 1.
+    # Passe 1 à l'aveugle : la référence n'apparaît pas.
+    assert "Le soir tombait" not in json.dumps(appels[0]["messages"], ensure_ascii=False)
+    # Passe 2 : texte seul (pas d'image), mots lus numérotés + items attendus.
     user_p2 = appels[1]["messages"][-1]["content"]
-    assert user_p2[1]["type"] == "image_url"
-    assert "Question 1" in user_p2[0]["text"]
-    assert "soire" in user_p2[0]["text"]
-    # Le codage part de la transcription issue des choix de la passe 2.
-    assert "Le soire tombait" in json.dumps(appels[2]["messages"], ensure_ascii=False)
+    assert isinstance(user_p2, str)
+    assert "2. soire" in user_p2 and "i2 → « soir »" in user_p2
+    # Codage : paires déjà alignées.
+    texte_codage = json.dumps(appels[2]["messages"], ensure_ascii=False)
+    assert "« soir » (mot) | écrit : « soire »" in texte_codage
 
     assert pred.raw_transcription == "Le soire tombait"
-    assert pred.transcription_passe1 == "Le soir[?] tombait"
-    assert pred.n_corrections_passe2 == 1
-    assert pred.n_incertains_passe1 == 1
-    assert pred.n_incertains_passe2 == 0
+    assert pred.transcription_passe1 == "Le soire[?] tombait"
+    assert [it.transcription for it in pred.items] == ["Le", "soire", "tombait"]
+    assert pred.n_absents_alignement == 0
+    assert pred.n_reparations_alignement == 0
     assert pred.n_attempts == 2
 
 
-def test_deux_passes_echec_passe2_garde_passe1(monkeypatch) -> None:
+def test_deux_passes_mot_oublie_ne_decale_pas(monkeypatch) -> None:
+    passe1 = json.dumps({"lignes": [["L e", "t o m b a i t"]], "incertains": []})
+    scorer = _make_scorer_deux_passes(
+        [passe1, _alignement([[1], [], [2]]), _CODAGE_OK], monkeypatch
+    )
+    pred = scorer.score_copy(_copy(), "Le soir tombait")
+    assert "« soir » (mot) | écrit : (rien)" in json.dumps(
+        scorer.client.appels[2]["messages"], ensure_ascii=False
+    )
+    assert [it.transcription for it in pred.items] == ["Le", "", "tombait"]
+    assert pred.n_absents_alignement == 1
+
+
+def test_deux_passes_echec_passe2_repli_texte(monkeypatch) -> None:
     passe1 = json.dumps({"lignes": [["L e", "s o i r e", "t o m b a i t"]], "incertains": []})
     # max_retries=1 → deux essais de passe 2, tous deux illisibles.
     scorer = _make_scorer_deux_passes(
@@ -242,20 +238,26 @@ def test_deux_passes_echec_passe2_garde_passe1(monkeypatch) -> None:
     )
     pred = scorer.score_copy(_copy(), "Le soir tombait")
     assert pred.raw_transcription == "Le soire tombait"
-    assert pred.transcription_passe1 == "Le soire tombait"
-    assert pred.n_corrections_passe2 is None
+    assert pred.n_absents_alignement is None
+    # Repli : ancien prompt de codage, qui reçoit la transcription en texte continu.
+    assert "Le soire tombait" in json.dumps(scorer.client.appels[3]["messages"], ensure_ascii=False)
     assert pred.n_attempts == 3
 
 
-def test_consigne_ratures_identique_dans_les_deux_passes() -> None:
+def test_passe1_insiste_sur_les_majuscules() -> None:
+    from evaluation_dictee.pipeline.prompts import build_transcription_passe1_prompt
+
+    systeme = build_transcription_passe1_prompt()[0]["content"]
+    assert "MAJUSCULES" in systeme
+
+
+def test_consigne_ratures_passe1() -> None:
     from evaluation_dictee.pipeline.prompts import (
         _CORPS_RATURES_EPELE,
         build_transcription_passe1_prompt,
-        build_transcription_passe2_prompt,
     )
 
     p1 = build_transcription_passe1_prompt(read_final_state=True)[0]["content"]
-    p2 = build_transcription_passe2_prompt("Q", read_final_state=True)[0]["content"]
-    assert "7 - " + _CORPS_RATURES_EPELE in p1
-    assert "6 - " + _CORPS_RATURES_EPELE in p2
-    assert "{{" not in p1 + p2
+    assert "8 - " + _CORPS_RATURES_EPELE in p1
+    assert "{{" not in p1
+    assert _CORPS_RATURES_EPELE not in build_transcription_passe1_prompt(False)[0]["content"]
