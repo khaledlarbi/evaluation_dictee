@@ -37,6 +37,15 @@ from evaluation_dictee.pipeline.prompts import (
     build_transcription_prompt,
     fetch_prompt,
 )
+from evaluation_dictee.pipeline.transcription_epelee import (
+    CHOIX_AUTRE,
+    LETTRES_CHOIX,
+    appliquer_reponses,
+    construire_questions,
+    formater_questions,
+    lignes_depuis_reponse,
+    lignes_vers_texte,
+)
 from evaluation_dictee.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -49,60 +58,51 @@ _TRANSCRIPTION_SCHEMA: dict[str, Any] = {
 }
 
 # Transcription en deux passes (option `transcription_verification`).
+# Passe 1 : éléments épelés (« p e r d u »), une liste par ligne de la copie.
 _PASSE1_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "lignes": {
+            "type": "array",
+            "items": {"type": "array", "items": {"type": "string"}},
+        },
         "incertains": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "mot": {"type": "string"},
+                    "ligne": {"type": "integer"},
+                    "position": {"type": "integer"},
                     "lettres_vues": {"type": "string"},
                     "variantes": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["mot", "lettres_vues", "variantes"],
+                "required": ["ligne", "position", "lettres_vues", "variantes"],
             },
         },
-        "transcription": {"type": "string"},
     },
-    # `incertains` AVANT `transcription` : l'hésitation est décrite avant d'écrire le texte.
-    "required": ["incertains", "transcription"],
+    "required": ["lignes", "incertains"],
 }
 
+# Passe 2 : une réponse par question fermée ; « lettres_vues » AVANT « choix ».
 _PASSE2_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "verifications": {
+        "reponses": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "reference": {"type": "string"},
-                    "passe1": {"type": "string"},
+                    "id": {"type": "integer"},
                     "lettres_vues": {"type": "string"},
-                    "ecrit": {"type": "string"},
-                    "verdict": {
-                        "type": "string",
-                        "enum": ["conforme", "faute de l'élève", "mot oublié", "incertain"],
-                    },
-                    "correction_passe1": {"type": "boolean"},
+                    "choix": {"type": "string", "enum": [*LETTRES_CHOIX, CHOIX_AUTRE]},
+                    "epele": {"type": "string"},
+                    "certain": {"type": "boolean"},
                 },
-                "required": [
-                    "reference",
-                    "passe1",
-                    "lettres_vues",
-                    "ecrit",
-                    "verdict",
-                    "correction_passe1",
-                ],
+                "required": ["id", "lettres_vues", "choix", "epele", "certain"],
             },
         },
-        "mots_ajoutes": {"type": "array", "items": {"type": "string"}},
-        "transcription": {"type": "string"},
-        "nb_incertains": {"type": "integer"},
     },
-    "required": ["verifications", "mots_ajoutes", "transcription", "nb_incertains"],
+    "required": ["reponses"],
 }
 
 
@@ -135,9 +135,15 @@ def _parse_json_object(content: str) -> dict[str, Any] | None:
 class _ResultatPasse:
     """Sortie parsée d'une passe de transcription."""
 
+    # Texte destiné au codage : état final (ratures résolues), sans marque « [?] ».
     transcription: str
     n_incertains: int | None = None
     n_corrections: int | None = None
+    # Format épelé : éléments recollés par ligne, texte annoté (diagnostic) et
+    # entrées « incertains » de la passe 1.
+    lignes: list[list[str]] | None = None
+    annotee: str | None = None
+    incertains: list[dict[str, Any]] | None = None
 
 
 def _request_kwargs(
@@ -373,65 +379,45 @@ class TwoStageScorer(Scorer):
             )
         return None, n_essais
 
-    @staticmethod
-    def _parse_passe1(content: str) -> _ResultatPasse | None:
-        """Parse la réponse de la passe 1 (transcription à l'aveugle + incertains).
+    def _parse_passe1(self, content: str) -> _ResultatPasse | None:
+        """Parse la passe 1 épelée et reconstruit le texte (le modèle ne recolle jamais).
 
         Args:
             content: Contenu textuel brut renvoyé par le modèle.
 
         Returns:
-            Le résultat parsé ; repli sur le texte brut si le JSON est illisible.
-        """
-        data = _parse_json_object(content)
-        if data is None:
-            # Même repli que l'étape 1 historique : texte brut pris tel quel.
-            return _ResultatPasse(transcription=content.strip()) if content.strip() else None
-        incertains = data.get("incertains")
-        return _ResultatPasse(
-            transcription=str(data.get("transcription", "")).strip(),
-            n_incertains=len(incertains) if isinstance(incertains, list) else None,
-        )
-
-    @staticmethod
-    def _parse_passe2(content: str) -> _ResultatPasse | None:
-        """Parse la réponse de la passe 2 (vérification mot à mot avec la référence).
-
-        Pas de repli texte brut : un texte libre en passe 2 n'est pas une transcription
-        vérifiée, on préfère alors garder la passe 1.
-
-        Args:
-            content: Contenu textuel brut renvoyé par le modèle.
-
-        Returns:
-            Le résultat parsé, ou None si le JSON est illisible.
+            Le résultat parsé, ou None si « lignes » est absent ou vide (nouvel essai).
         """
         data = _parse_json_object(content)
         if data is None:
             return None
-        verifications = data.get("verifications")
-        n_corrections = None
-        if isinstance(verifications, list):
-            n_corrections = sum(
-                1 for v in verifications if isinstance(v, dict) and v.get("correction_passe1")
-            )
-        nb_incertains = data.get("nb_incertains")
+        lignes = lignes_depuis_reponse(data)
+        if lignes is None:
+            return None
+        incertains = data.get("incertains")
+        incertains = (
+            [i for i in incertains if isinstance(i, dict)] if isinstance(incertains, list) else []
+        )
+        final = self.prompt_config.read_final_state
         return _ResultatPasse(
-            transcription=str(data.get("transcription", "")).strip(),
-            n_incertains=nb_incertains if isinstance(nb_incertains, int) else None,
-            n_corrections=n_corrections,
+            transcription=lignes_vers_texte(lignes, final=final, garder_marques=False),
+            n_incertains=len(incertains),
+            lignes=lignes,
+            annotee=lignes_vers_texte(lignes, final=False, garder_marques=True),
+            incertains=incertains,
         )
 
     def _transcribe_deux_passes(
-        self, copy: Copy, reference_text: str
+        self, copy: Copy
     ) -> tuple[str, int, _ResultatPasse | None, _ResultatPasse | None]:
-        """Transcription en deux passes : aveugle, puis vérifiée avec la référence.
+        """Transcription en deux passes : épelée à l'aveugle, puis questions fermées.
 
-        Si la passe 2 échoue, on garde la passe 1 (la copie reste codable).
+        Les options de la passe 2 sont fabriquées à partir des items de la grille ; le
+        texte de référence n'est jamais envoyé au modèle. Si la passe 2 échoue, on garde
+        la passe 1 (la copie reste codable).
 
         Args:
             copy: Copie dont l'image est à transcrire.
-            reference_text: Texte de référence de la dictée.
 
         Returns:
             (transcription retenue, nb total de tentatives, résultat passe 1, résultat
@@ -446,26 +432,46 @@ class TwoStageScorer(Scorer):
             _PASSE1_SCHEMA,
             "transcription_passe1",
             self._parse_passe1,
-            "Passe 1 (transcription aveugle)",
+            "Passe 1 (transcription épelée)",
             PROMPT_TRANSCRIPTION_PASSE1,
         )
-        if passe1 is None:
+        if passe1 is None or passe1.lignes is None:
             return "", n1, None, None
-        if not reference_text.strip():
-            logger.warning("Pas de texte de référence pour %s : passe 2 sautée.", copy.copy_id)
+
+        items = [self._items_by_id[i] for i in copy.item_ids if i in self._items_by_id]
+        questions = construire_questions(
+            passe1.lignes, items, passe1.incertains, graine=copy.copy_id
+        )
+        if not questions:
+            logger.warning("Aucune question fermée pour %s : passe 2 sautée.", copy.copy_id)
             return passe1.transcription, n1, passe1, None
+
+        lignes_p1 = passe1.lignes
+
+        def _parse_passe2(content: str) -> _ResultatPasse | None:
+            data = _parse_json_object(content)
+            reponses = data.get("reponses") if data is not None else None
+            if not isinstance(reponses, list) or not reponses:
+                return None
+            res = appliquer_reponses(lignes_p1, questions, reponses)
+            return _ResultatPasse(
+                transcription=lignes_vers_texte(res.lignes, final=read_final, garder_marques=False),
+                n_incertains=res.n_incertains,
+                n_corrections=res.n_corrections,
+                lignes=res.lignes,
+            )
+
         passe2, n2 = self._appel_image(
             copy,
             build_transcription_passe2_prompt(
-                reference_text=reference_text,
-                transcription_passe1=passe1.transcription,
+                questions=formater_questions(questions, lignes_p1),
                 read_final_state=read_final,
             ),
             image_url,
             _PASSE2_SCHEMA,
             "transcription_passe2",
-            self._parse_passe2,
-            "Passe 2 (vérification)",
+            _parse_passe2,
+            "Passe 2 (questions fermées)",
             PROMPT_TRANSCRIPTION_PASSE2,
         )
         if passe2 is None:
@@ -607,9 +613,7 @@ class TwoStageScorer(Scorer):
         passe1: _ResultatPasse | None = None
         passe2: _ResultatPasse | None = None
         if self.prompt_config.transcription_verification:
-            transcription, n_attempts, passe1, passe2 = self._transcribe_deux_passes(
-                copy, reference_text or ""
-            )
+            transcription, n_attempts, passe1, passe2 = self._transcribe_deux_passes(copy)
         else:
             transcription, n_attempts = self._transcribe(copy)
 
@@ -629,7 +633,8 @@ class TwoStageScorer(Scorer):
         prediction.n_attempts = n_attempts
         prediction.raw_transcription = transcription
         if passe1 is not None:
-            prediction.transcription_passe1 = passe1.transcription
+            # Version annotée (ratures, « [?] ») : diagnostic de la lecture brute.
+            prediction.transcription_passe1 = passe1.annotee or passe1.transcription
             prediction.n_incertains_passe1 = passe1.n_incertains
         if passe2 is not None:
             prediction.n_corrections_passe2 = passe2.n_corrections

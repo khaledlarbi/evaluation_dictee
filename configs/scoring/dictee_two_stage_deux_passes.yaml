@@ -2,9 +2,10 @@
 #  Run scoring dictée — MÉTHODE B, transcription EN DEUX PASSES
 # ═══════════════════════════════════════════════════════════════════════════
 #  Variante de dictee_two_stage.yaml (prompt.transcription_verification: true) :
-#    Passe 1 : le VLM transcrit l'image à l'aveugle (sans référence) + mots incertains.
-#    Passe 2 : le VLM revoit l'image avec la référence et la passe 1, vérifie mot à mot
-#              (l'image fait foi) et rend la transcription finale.
+#    Passe 1 : le VLM ÉPELLE l'image à l'aveugle (sans référence), ligne par ligne,
+#              + mots incertains ; le texte est recollé par le code.
+#    Passe 2 : questions à choix fermé, une par mot (options fabriquées par le code à
+#              partir de la grille ; la référence n'est jamais envoyée au modèle).
 #  Le codage (étape 2) part de la transcription de la passe 2.
 #  JSONL : champs transcription_passe1, n_corrections_passe2, n_incertains_passe1/2.
 #  Bras d'expérience : export vers predictions/experimentations/ (D9).

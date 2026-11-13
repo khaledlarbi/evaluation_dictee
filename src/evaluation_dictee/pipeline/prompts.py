@@ -21,8 +21,10 @@ PROMPT_DICTATION = "Dictation"
 PROMPT_TRANSCRIPTION = "Transcription"
 PROMPT_TEXT_CODING = "Text coding"
 # Transcription en deux passes (option `transcription_verification`).
-PROMPT_TRANSCRIPTION_PASSE1 = "Transcription pass 1"
-PROMPT_TRANSCRIPTION_PASSE2 = "Transcription pass 2 verification"
+# Noms distincts des anciennes versions (texte libre, vérification avec référence) :
+# Langfuse servirait sinon l'ancien prompt, au format de sortie incompatible.
+PROMPT_TRANSCRIPTION_PASSE1 = "Transcription pass 1 spelled"
+PROMPT_TRANSCRIPTION_PASSE2 = "Transcription pass 2 closed choice"
 
 _GRILLE_SIMPLIFIEE = (
     "Pour chaque item, attribue un code :\n"
@@ -313,35 +315,46 @@ _TEMPLATE_TEXT_CODING: list[ChatMessageDict] = [
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Transcription en deux passes (option `transcription_verification`).
-# Passe 1 : lecture à l'aveugle, mots incertains signalés.
-# Passe 2 : vérification mot à mot avec la référence ; l'IMAGE reste la seule autorité.
-# {{consigne_ratures}} reçoit la MÊME valeur dans les deux passes, sinon la passe 2
-# réécrit les ratures autrement que la passe 1.
+# Passe 1 : transcription ÉPELÉE à l'aveugle (lettre par lettre), une liste par ligne ;
+#   le texte est recollé par le code (`pipeline/transcription_epelee.py`), jamais par
+#   le modèle, qui en profiterait pour corriger l'élève.
+# Passe 2 : questions à choix fermé, mot par mot. Le texte de référence n'est JAMAIS
+#   envoyé : il sert seulement au code pour fabriquer les options.
 # ─────────────────────────────────────────────────────────────────────────────
+
+_SYSTEME_LECTEUR = "Tu lis l'écriture manuscrite d'enfants, lettre par lettre.\n"
 
 _TEMPLATE_TRANSCRIPTION_PASSE1: list[ChatMessageDict] = [
     {
         "role": "system",
         "content": (
-            "Tu es un expert en lecture d'écriture manuscrite d'enfants.\n"
-            "On te montre l'image manuscrite de la dictée d'un élève de primaire.\n\n"
-            "Règles à respecter impérativement :\n"
-            "1 - Transcris EXACTEMENT le texte écrit par l'élève, FAUTES D'ORTHOGRAPHE "
-            "COMPRISES.\n"
-            "2 - Ne corrige rien, ne complète rien, ne réordonne rien. Ne devine pas le "
-            "texte attendu : si un mot est mal écrit, recopie-le mal écrit.\n"
-            "3 - Reproduis fidèlement les erreurs, y compris les accents manquants ou en "
-            "trop, les lettres manquantes ou en trop, les majuscules et la ponctuation.\n"
-            "4 - Respecte l'ordre exact des éléments écrits sur la copie (mots, "
-            "ponctuation, chiffres, tirets de dialogue...).\n"
-            "5 - Lis lettre par lettre, pas mot par mot. Regarde en particulier la fin de "
-            "chaque mot (s, x, e, es, é, er, ez, ait, aient, nt), les accents, les "
-            "cédilles et les apostrophes.\n"
-            "6 - Respecte les retours à la ligne de la copie, en les écrivant \\n dans "
-            "le JSON.\n"
-            "7 - Si tu hésites sur un mot, écris dans la transcription la lecture la plus "
-            'probable suivie de [?], et décris ton hésitation dans "incertains".\n'
-            "{{consigne_ratures}}"
+            _SYSTEME_LECTEUR
+            + "On te montre l'image d'un texte écrit à la main par un élève de primaire. "
+            "Ce texte contient des fautes d'orthographe, et c'est précisément ce qu'on "
+            "veut relever.\n\n"
+            "Ta tâche : pour chaque mot, épeler les lettres que tu VOIS, une par une, "
+            "séparées par des espaces.\n\n"
+            "Règles :\n"
+            "1 - Épelle uniquement les lettres présentes sur la feuille. N'ajoute pas une "
+            "lettre parce que la grammaire l'exigerait, et n'en retire pas une parce "
+            "qu'elle semble en trop.\n"
+            "2 - Pour chaque lettre, regarde le tracé et non le sens du mot. Fais "
+            "particulièrement attention à la fin des mots, aux accents (é, è, ê, à ou "
+            "absence d'accent), aux cédilles et aux apostrophes.\n"
+            "3 - L'apostrophe et le trait d'union sont des caractères comme les autres : "
+            "« n ' é t a i e n t », « p e u t - ê t r e ».\n"
+            '4 - Chaque signe de ponctuation est un élément séparé : ".", ",", "?", "!", '
+            '"-" (tiret de dialogue).\n'
+            '5 - Une ligne de la copie = une liste dans "lignes". Respecte l\'ordre exact.\n'
+            "6 - Si tu hésites sur une lettre, épelle la lecture la plus probable, ajoute "
+            '" [?]" à la fin du mot et décris l\'hésitation dans "incertains".\n'
+            "{{consigne_ratures}}\n"
+            "Exemple (copie différente, pour illustrer le format) :\n"
+            "Sur la feuille : « Les enfant sont partit a l'ecole. »\n"
+            'Bonne réponse : ["L e s", "e n f a n t", "s o n t", "p a r t i t", "a", '
+            '"l \' e c o l e", "."]\n'
+            'Mauvaise réponse : ["L e s", "e n f a n t s", "s o n t", "p a r t i s", "à", '
+            '"l \' é c o l e", "."], parce qu\'elle corrige l\'élève.'
         ),
     },
     {
@@ -349,13 +362,17 @@ _TEMPLATE_TRANSCRIPTION_PASSE1: list[ChatMessageDict] = [
         "content": (
             "Réponds UNIQUEMENT par un objet JSON, sans texte autour, de la forme :\n"
             "{\n"
-            '  "incertains": [\n'
-            '    {"mot": "lecture retenue", "lettres_vues": "description lettre par '
-            'lettre de ce qui est écrit", "variantes": ["autre lecture possible"]}\n'
+            '  "lignes": [\n'
+            '    ["m o t", "m o t", "."],\n'
+            '    ["m o t", ","]\n'
             "  ],\n"
-            '  "transcription": "le texte exact écrit par l\'élève"\n'
+            '  "incertains": [\n'
+            '    {"ligne": 1, "position": 2, "lettres_vues": "description du tracé", '
+            '"variantes": ["autre lecture possible"]}\n'
+            "  ]\n"
             "}\n"
-            'Si aucun mot n\'est incertain, "incertains" est une liste vide.'
+            '"ligne" et "position" commencent à 1. Si aucun mot n\'est incertain, '
+            '"incertains" est une liste vide.'
         ),
     },
 ]
@@ -364,61 +381,36 @@ _TEMPLATE_TRANSCRIPTION_PASSE2: list[ChatMessageDict] = [
     {
         "role": "system",
         "content": (
-            "Tu es un expert en lecture d'écriture manuscrite d'enfants.\n"
-            "On te montre l'image manuscrite de la dictée d'un élève de primaire, le "
-            "texte de référence de la dictée et une première transcription faite sans "
-            "connaître ce texte.\n\n"
-            "L'IMAGE est la seule autorité. Le texte de référence sert uniquement à "
-            "savoir quel mot l'élève essayait d'écrire. Il ne dit pas ce que l'élève a "
-            "écrit.\n"
-            "La première transcription peut contenir deux sortes d'erreurs :\n"
-            "(a) une faute de l'élève corrigée par erreur, parce qu'un mot mal écrit a "
-            "été lu comme le mot correct ;\n"
-            "(b) une erreur de lecture prise pour une faute.\n\n"
-            "Règles à respecter impérativement :\n"
-            "1 - Pour CHAQUE mot du texte de référence, y compris ceux qui sont "
-            "identiques dans la première transcription, retrouve le mot sur l'image et "
-            "décris lettre par lettre ce qui est écrit.\n"
-            "2 - Sois particulièrement attentif aux pièges de la dictée : accords (s, e, "
-            "es, x), participes passés et infinitifs (é, és, ée, er, ez), terminaisons "
-            "verbales (ait, aient, ent, ont), homophones (a/à, ce/se, ces/ses, on/ont, "
-            "leur/leurs, et/est), accents, cédilles, apostrophes, majuscules.\n"
-            "3 - Repère aussi les mots oubliés par l'élève et les mots qu'il a ajoutés.\n"
-            "4 - Ne corrige jamais l'élève : la transcription finale reproduit ce qui est "
-            "écrit, fautes comprises.\n"
-            "5 - Respecte les retours à la ligne de la copie, en les écrivant \\n dans "
-            "le JSON.\n"
+            _SYSTEME_LECTEUR
+            + "On te montre l'image d'un texte écrit à la main par un élève de primaire, "
+            "qui contient des fautes d'orthographe. Pour certains mots, on te propose "
+            "plusieurs orthographes très proches : une seule correspond exactement à ce "
+            "qui est tracé sur la feuille.\n\n"
+            "Règles :\n"
+            "1 - Retrouve le mot sur l'image grâce à sa ligne et à sa position.\n"
+            "2 - Décris d'abord le tracé, lettre par lettre, en particulier la fin du mot, "
+            "les accents, les cédilles et les apostrophes.\n"
+            "3 - Choisis ensuite l'option qui correspond EXACTEMENT au tracé, lettre pour "
+            "lettre. Ne tiens pas compte de ce qui serait grammaticalement correct : les "
+            "options fautives sont aussi probables que les correctes.\n"
+            '4 - Si aucune option ne correspond, choisis "AUTRE" et épelle ce que tu vois.\n'
+            '5 - Si le tracé ne permet pas de trancher, mets "certain": false.\n'
             "{{consigne_ratures}}"
         ),
     },
     {
         "role": "user",
         "content": (
-            "TEXTE DE RÉFÉRENCE :\n"
-            "{{texte_reference}}\n\n"
-            "PREMIÈRE TRANSCRIPTION :\n"
-            "{{transcription_passe1}}\n\n"
+            "{{questions}}\n\n"
             "Réponds UNIQUEMENT par un objet JSON, sans texte autour, de la forme :\n"
             "{\n"
-            '  "verifications": [\n'
-            "    {\n"
-            '      "reference": "mot du texte de référence",\n'
-            '      "passe1": "mot dans la première transcription",\n'
-            '      "lettres_vues": "description lettre par lettre de ce qui est écrit '
-            "sur l'image\",\n"
-            '      "ecrit": "ce que l\'élève a réellement écrit",\n'
-            '      "verdict": "conforme | faute de l\'élève | mot oublié | incertain",\n'
-            '      "correction_passe1": true\n'
-            "    }\n"
-            "  ],\n"
-            '  "mots_ajoutes": ["mots écrits par l\'élève qui ne sont pas dans la '
-            'référence"],\n'
-            '  "transcription": "le texte exact écrit par l\'élève",\n'
-            '  "nb_incertains": 0\n'
+            '  "reponses": [\n'
+            '    {"id": 1, "lettres_vues": "description du tracé", "choix": "B", '
+            '"epele": "p e r d u", "certain": true}\n'
+            "  ]\n"
             "}\n"
-            '"verifications" contient une entrée par mot du texte de référence, dans '
-            "l'ordre.\n"
-            '"correction_passe1" vaut true si "ecrit" diffère de "passe1", false sinon.'
+            '"epele" contient toujours l\'orthographe retenue, épelée, même quand "choix" '
+            'n\'est pas "AUTRE".'
         ),
     },
 ]
@@ -729,25 +721,40 @@ def build_transcription_prompt(read_final_state: bool = True) -> list[ChatMessag
     )
 
 
-def _consigne_ratures_deux_passes(read_final_state: bool) -> str:
-    """Consigne « ratures » commune aux deux passes (identique, sinon la passe 2 réécrit).
+# Corps de la consigne « ratures » des deux passes, adapté au format épelé. Elle CONSERVE
+# les ratures au lieu de les ignorer : l'état final (décision DEPP) est reconstruit par
+# le code (`transcription_epelee.etat_final`) avant le codage, et la passe 1 garde ainsi
+# une trace de ce que l'élève a barré.
+_CORPS_RATURES_EPELE = (
+    "Conserve les ratures et corrections de l'élève :\n"
+    '- mot barré : élément séparé entre ~~ ~~, par exemple "~~M a m a n~~"\n'
+    '- ajout au-dessus ou en dessous de la ligne : élément "[ajout: m o t]" placé là où '
+    "il s'insère\n"
+    "- lettre réécrite par-dessus une autre : {ancienne→nouvelle} dans le mot, par "
+    'exemple "p e r d {a→e}"\n'
+    '- passage illisible : élément "[illisible]"\n'
+)
+
+
+def _consigne_ratures_deux_passes(read_final_state: bool, numero: int) -> str:
+    """Consigne « ratures » des deux passes : même corps, seul le numéro de règle change.
 
     Args:
-        read_final_state: si True, consigne de ne lire que l'état final (décision DEPP).
+        read_final_state: si True, la consigne est injectée (décision DEPP : état final,
+            reconstruit par le code à partir des annotations).
+        numero: numéro de la règle dans le prompt de la passe.
 
     Returns:
         Le bloc à injecter dans `{{consigne_ratures}}`, vide si l'option est inactive.
     """
-    # Non numérotée : les deux passes n'ont pas le même nombre de règles, or la
-    # consigne doit être strictement identique dans les deux.
-    return ("Ratures : " + _CONSIGNE_RATURES_TRANSCRIPTION) if read_final_state else ""
+    return f"{numero} - {_CORPS_RATURES_EPELE}" if read_final_state else ""
 
 
 def build_transcription_passe1_prompt(read_final_state: bool = True) -> list[ChatMessageDict]:
-    """Prompt PASSE 1 de la transcription en deux passes : lecture à l'aveugle (sans référence).
+    """Prompt PASSE 1 : transcription épelée à l'aveugle (sans référence).
 
     Args:
-        read_final_state: si True, ajoute la consigne de ne lire que l'état final (ratures).
+        read_final_state: si True, ajoute la consigne d'annotation des ratures.
 
     Returns:
         Les messages du prompt compilés, prêts à recevoir l'image.
@@ -755,20 +762,17 @@ def build_transcription_passe1_prompt(read_final_state: bool = True) -> list[Cha
     return _compile_prompt(
         PROMPT_TRANSCRIPTION_PASSE1,
         fallback=_TEMPLATE_TRANSCRIPTION_PASSE1,
-        variables={"consigne_ratures": _consigne_ratures_deux_passes(read_final_state)},
+        variables={"consigne_ratures": _consigne_ratures_deux_passes(read_final_state, 7)},
     )
 
 
 def build_transcription_passe2_prompt(
-    reference_text: str,
-    transcription_passe1: str,
-    read_final_state: bool = True,
+    questions: str, read_final_state: bool = True
 ) -> list[ChatMessageDict]:
-    """Prompt PASSE 2 : vérification de la passe 1 avec la référence (l'image fait foi).
+    """Prompt PASSE 2 : questions à choix fermé (la référence n'y figure jamais).
 
     Args:
-        reference_text: texte de référence de la dictée.
-        transcription_passe1: transcription produite à l'aveugle en passe 1.
+        questions: bloc des questions (`transcription_epelee.formater_questions`).
         read_final_state: si True, même consigne « ratures » qu'en passe 1.
 
     Returns:
@@ -778,9 +782,8 @@ def build_transcription_passe2_prompt(
         PROMPT_TRANSCRIPTION_PASSE2,
         fallback=_TEMPLATE_TRANSCRIPTION_PASSE2,
         variables={
-            "consigne_ratures": _consigne_ratures_deux_passes(read_final_state),
-            "texte_reference": reference_text,
-            "transcription_passe1": transcription_passe1,
+            "consigne_ratures": _consigne_ratures_deux_passes(read_final_state, 6),
+            "questions": questions,
         },
     )
 
