@@ -166,7 +166,8 @@ class ExperimentConfig(BaseModel):
     model_stage2: ModelConfig | None = None
     # Lecteurs SUPPLÉMENTAIRES (two_stage + transcription_verification) : chacun relit
     # la copie (passe 1), son texte est aligné puis codé par `model_stage2`, et le code
-    # retenu par item est le code majoritaire (`model` l'emporte en cas d'égalité). La
+    # retenu par item est le code majoritaire (`model` ne tranche que sans majorité :
+    # trois codes différents, ou un lecteur en échec et les deux autres en désaccord). La
     # confiance d'un item = part des lecteurs qui donnent ce code : la discordance
     # entre lecteurs sert de score de renvoi humain. Mesuré le 13/11/2026 sur 50 copies
     # (qwen3-8-27b, gemma4-26b-moe, qwen3-6-35b-moe) : kappa 0,728 contre 0,687 pour
