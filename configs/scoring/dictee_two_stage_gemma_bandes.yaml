@@ -1,0 +1,66 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  Run scoring dictée — MÉTHODE B, LECTEUR UNIQUE gemma EN 4 BANDES
+# ═══════════════════════════════════════════════════════════════════════════
+#  Variante de dictee_two_stage_deux_passes.yaml : la passe 1 est lue par
+#  gemma4-26b-moe sur la zone d'écriture recadrée, découpée en 4 bandes au creux
+#  des interlignes (envoyées comme 4 images d'un même appel). Alignement local,
+#  puis codage des paires alignées par model_stage2.
+#  Mesuré le 14/11/2026 sur 99 copies : kappa 0,715 (biais +2,1 pt, 12,6 % de
+#  fautes ratées) ; le codeur ne change rien (0,715 à 0,716 avec les trois codeurs
+#  testés). Une lecture + un codage par copie. Voir docs/bilan_tentatives_lecture.md.
+#  Bras d'expérience : export vers predictions/experimentations/ (D9).
+#
+#  Lancer : launchers/launch_eval.sh --config configs/scoring/dictee_two_stage_gemma_bandes.yaml
+#  Sortie  : data/processed/dictee_two_stage_gemma_bandes_gemma4-26b-moe-crop-b4_qwen3-6-35b-moe_predictions.jsonl
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: dictee_two_stage_gemma_bandes
+seed: 42
+concurrency: 12
+
+approach: two_stage
+
+# Étape 1 = transcription (doit être multimodal pour lire l'image).
+model:
+  # Meilleur lecteur seul (99 copies, 14/11/2026) : kappa 0,715 contre 0,676 pour
+  # qwen3-8-27b. gemma réduit toute image à ~256 tokens : la zone d'écriture est
+  # recadrée puis découpée en 4 bandes, chacune avec son propre budget.
+  name: gemma4-26b-moe
+  kind: vlm
+  temperature: 0.0
+  max_tokens: 16384
+  request_logprobs: true
+  max_retries: 2
+  disable_thinking: true
+  structured_output: true
+  image:
+    recadrage: true
+    n_bandes: 4
+
+# Étape 2 = codage textuel (modèle texte seul, obligatoire en two_stage).
+model_stage2:
+  name: qwen3-6-35b-moe # ou gemma4-26b-moe
+  kind: llm
+  temperature: 0.0
+  max_tokens: 8192
+  structured_output: true
+  disable_thinking: true
+  max_retries: 2
+
+data:
+  corpus: dictee
+  images_path: s3://projet-production-ecrits-depp/dictee_2015/
+  labels_path: s3://projet-production-ecrits-depp/resultat_dictee_2015.csv
+  grid_path: configs/grille_dictee_2015.json
+  limit: null
+
+grid:
+  scheme: simplifiee
+
+prompt:
+  method: B
+  n_few_shot: 0
+  enforce_faithful: true
+  read_final_state: true
+  chain_of_thought: false
+  transcription_verification: true
