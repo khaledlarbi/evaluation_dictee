@@ -73,6 +73,27 @@ lisent en pleine résolution (32 px par token) ; gemma ramène toute image à en
 | Épaississement du trait de 1 px, sur les trois lecteurs (49 copies) | tous les lecteurs perdent (vote 0,747 → 0,686 ; gemma 0,725 → 0,631), la ponctuation la première : un point se colle aux lettres, les boucles se referment | non |
 | Même relecture avec qwen3-8-27b, bande agrandie ×2 | encore moins bon (testé seulement avant la correction de la localisation) | non |
 
+## 5. Croisements lecteur × codeur (99 copies, 8 217 items, 14/11/2026)
+
+Trois lecteurs (gemma recadré en 4 bandes, qwen3-8-27b et qwen3-6-35b-moe sur la page
+entière) × trois codeurs (qwen3-6-35b-moe, gemma4-26b-moe, qwen3-8-27b, en texte seul
+sur les paires alignées). Une copie absente d'un run : comparaison sur 99 copies.
+
+| Lecteur \ Codeur | qwen3-6-35b-moe | gemma4-26b-moe | qwen3-8-27b |
+|---|---|---|---|
+| gemma, recadrage + 4 bandes | 0,715 | 0,715 | 0,716 |
+| qwen3-8-27b | 0,676 | 0,687 | 0,675 |
+| qwen3-6-35b-moe | 0,663 | 0,664 | 0,658 |
+| **Vote à trois lecteurs** | **0,745** | **0,747** | **0,743** |
+
+- **Le codeur ne change rien** (écarts de 0,01 au plus, dans le bruit) : 0 à 2 % des
+  désaccords viennent du codage, quel que soit le codeur.
+- **Tout se joue à la lecture.** gemma en bandes reste le meilleur lecteur (0,715,
+  12,6 % de fautes ratées contre 21 % pour qwen3-8-27b et 27 % pour qwen3-6-35b-moe).
+- Le vote à trois lecteurs (≈ 0,745, biais −0,4 pt, 18,7 % de non-unanimes, 3,6 à
+  3,8 % d'erreur résiduelle) reste la meilleure approche, quel que soit le codeur.
+  Le choix du codeur peut se faire sur le coût ou la vitesse.
+
 ## Reste à faire
 
 - Lancer la config de vote telle quelle sur 50 copies, pour confirmer le 0,739 hors
