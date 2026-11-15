@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import io
+import random
 from dataclasses import dataclass, field
 
 import fsspec
@@ -71,7 +72,11 @@ def ink_ratio(image: Image.Image) -> float:
 def load_labels(csv_path: str) -> dict[str, dict[str, str]]:
     """Charge les codes de l'annotateur depuis le CSV de correction (séparateur ';', local ou S3).
 
-    Structure : colonne d'index, colonne nom d'image, puis une colonne par item.
+    Deux structures sont reconnues d'après l'en-tête :
+
+    - **large** (2015) : colonne d'index, colonne nom d'image, puis une colonne par item ;
+    - **longue** (2021) : une ligne par (copie, item), colonnes `dictee;num_item;corrige`.
+      Les items sont rangés par identifiant, comme les colonnes du format large.
 
     Args:
         csv_path: Chemin local ou S3 du CSV de correction.
@@ -82,7 +87,13 @@ def load_labels(csv_path: str) -> dict[str, dict[str, str]]:
     labels: dict[str, dict[str, str]] = {}
     with fsspec.open(csv_path, "rt", encoding="utf-8") as f:
         reader = csv.reader(f, delimiter=";")
-        header = next(reader)
+        header = [h.strip().strip('"') for h in next(reader)]
+        if header[:3] == ["dictee", "num_item", "corrige"]:
+            for row in reader:
+                if len(row) < 3:
+                    continue
+                labels.setdefault(row[0].strip(), {})[row[1].strip()] = row[2].strip()
+            return {c: dict(sorted(items.items())) for c, items in labels.items()}
         item_ids = header[2:]
         for row in reader:
             if not row:
@@ -109,6 +120,7 @@ def load_dataset(
     images_dir: str,
     labels_csv: str,
     limit: int | None = None,
+    sample_seed: int | None = None,
 ) -> list[Copy]:
     """Construit la liste des copies à partir des images et du CSV de labels.
 
@@ -118,14 +130,20 @@ def load_dataset(
         images_dir: Dossier (local ou S3) contenant les imagettes.
         labels_csv: Chemin du CSV des codes experts.
         limit: Nombre maximal de copies à charger (toutes si None).
+        sample_seed: Avec `limit`, tire les copies au hasard (graine fixe) au lieu de
+            prendre les premières. Les premières copies ne sont pas représentatives :
+            sur 2015, elles étaient plus faciles que la moyenne.
 
     Returns:
         La liste des copies trouvées, triées par identifiant.
     """
     labels = load_labels(labels_csv)
 
+    ordre = sorted(labels)
+    if limit is not None and sample_seed is not None:
+        random.Random(sample_seed).shuffle(ordre)
     copies: list[Copy] = []
-    for copy_id in sorted(labels):
+    for copy_id in ordre:
         image_path = _join(images_dir, copy_id)
         if not _exists(image_path):
             continue
@@ -140,4 +158,4 @@ def load_dataset(
         )
         if limit is not None and len(copies) >= limit:
             break
-    return copies
+    return sorted(copies, key=lambda c: c.copy_id)

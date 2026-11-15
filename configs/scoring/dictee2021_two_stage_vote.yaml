@@ -1,0 +1,85 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  Run scoring dictée 2021 — VOTE À TROIS LECTEURS, échantillon aléatoire
+# ═══════════════════════════════════════════════════════════════════════════
+#  Copie de dictee_two_stage_vote.yaml (mêmes lecteurs, codeur et consignes) sur le
+#  corpus 2021 : même texte et mêmes 83 items que 2015, codes sur la grille complète
+#  (3/4/5 regroupés en erreur), CSV au format long dictee;num_item;corrige.
+#  But : tester la transposition de l'agrégation apprise (apprendre sur 100 à 200
+#    copies de 2021, évaluer sur le reste) et l'évolution du taux de faute
+#    2015 → 2021, estimée et réelle.
+#  Échantillon : 1 000 copies tirées au hasard (graine 2021) parmi 6 793, ≈ 4 h 30.
+#    Augmenter `limit` avec la même graine reprend le checkpoint (tirage emboîté).
+#  Lancer : launchers/launch_eval.sh --config configs/scoring/dictee2021_two_stage_vote.yaml --no-export
+#  Bras d'expérience : export vers predictions/experimentations/ (D9).
+# ───────────────────────────────────────────────────────────────────────────
+
+name: dictee2021_two_stage_vote
+seed: 42
+concurrency: 12
+
+approach: two_stage
+
+# Étape 1 = transcription (doit être multimodal pour lire l'image).
+model:
+  # Lecteur principal : meilleur lecteur seul mesuré le 13/11/2026 sur 50 copies
+  # (kappa 0,687 contre 0,650 pour qwen3-6-35b-moe et 0,629 pour gemma4-26b-moe).
+  name: qwen3-8-27b
+  kind: vlm
+  temperature: 0.0
+  max_tokens: 16384
+  request_logprobs: true
+  max_retries: 2
+  disable_thinking: true
+  structured_output: true
+
+# Étape 2 = codage textuel (modèle texte seul, obligatoire en two_stage).
+model_stage2:
+  name: qwen3-6-35b-moe # ou gemma4-26b-moe
+  kind: llm
+  temperature: 0.0
+  max_tokens: 8192
+  structured_output: true
+  disable_thinking: true
+  max_retries: 2
+
+
+# Lecteurs supplémentaires (passe 1 uniquement ; codage par model_stage2).
+extra_readers:
+  - name: gemma4-26b-moe
+    kind: vlm
+    temperature: 0.0
+    max_tokens: 16384
+    request_logprobs: true
+    max_retries: 2
+    disable_thinking: true
+    structured_output: true
+    # 50 copies, gemma seul : kappa 0,629 (page entière) → 0,722 (recadrage + 4 bandes).
+    image:
+      recadrage: true
+      n_bandes: 4
+  - name: qwen3-6-35b-moe
+    kind: vlm
+    temperature: 0.0
+    max_tokens: 16384
+    request_logprobs: true
+    max_retries: 2
+    disable_thinking: true
+    structured_output: true
+data:
+  corpus: dictee
+  images_path: s3://projet-production-ecrits-depp/dictee_2021/
+  labels_path: s3://projet-production-ecrits-depp/correction_dictee_2021.csv
+  grid_path: configs/grille_dictee_2015.json
+  limit: 1000
+  sample_seed: 2021
+
+grid:
+  scheme: simplifiee
+
+prompt:
+  method: B
+  n_few_shot: 0
+  enforce_faithful: true
+  read_final_state: true
+  chain_of_thought: false
+  transcription_verification: true

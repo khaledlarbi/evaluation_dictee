@@ -193,6 +193,7 @@ def run_benchmark(
         images_dir=config.data.images_path,
         labels_csv=config.data.labels_path,
         limit=config.data.limit,
+        sample_seed=config.data.sample_seed,
     )
 
     # Échec explicite si aucune copie — évite la boucle silencieuse
