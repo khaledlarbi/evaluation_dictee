@@ -236,6 +236,17 @@ def test_prompt_passe1_ronds_sur_i_et_majuscule_apres_point() -> None:
     assert "Après chaque point" in systeme
 
 
+def test_prompt_passe1_regles_elisions() -> None:
+    from evaluation_dictee.pipeline.prompts import build_transcription_passe1_prompt
+
+    sans = build_transcription_passe1_prompt()[0]["content"]
+    avec = build_transcription_passe1_prompt(regles_elisions=True)[0]["content"]
+    assert "jambages" not in sans and "{{" not in sans
+    assert "jambages" in avec and "lettre suivie d'une apostrophe" in avec
+    # Règles ajoutées après la règle 9, avant la consigne des ratures.
+    assert avec.index("9 - Après chaque point") < avec.index("10 - ") < avec.index("Ratures")
+
+
 def test_passe1_tronquee_relancee(monkeypatch) -> None:
     """Une passe 1 coupée par max_tokens est relancée, jamais prise comme texte brut."""
     scorer = _make_scorer_deux_passes([], monkeypatch)

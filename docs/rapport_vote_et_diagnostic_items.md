@@ -278,7 +278,7 @@ dominante. Aucune correction ciblée ne s'impose.
 
 ## 8. Pistes de correction
 
-Aucune de ces pistes n'est encore mise en œuvre.
+Les deux premières pistes ont été testées le 15/11/2026 (section 9).
 
 | Piste | Ce qu'elle vise | Comment la tester | Point d'attention |
 |---|---|---|---|
@@ -290,7 +290,111 @@ Aucune de ces pistes n'est encore mise en œuvre.
 Pour « ce » (item 74), aucune piste simple ne se dégage. Ajouter une règle de lecture
 risquerait d'augmenter les fautes inventées ailleurs.
 
-## 9. Limites
+### Piste à explorer : remplacer le vote par une agrégation apprise par item
+
+*Notée le 15/11/2026, non mise en œuvre.*
+
+Le vote à la majorité traite tous les items de la même façon. Or la section 7 montre
+que les erreurs des lecteurs dépendent de l'item : sur « n' », un 9 venu d'une
+lecture « m' » est presque toujours un faux écart ; sur « ce », un 1 unanime cache
+souvent une faute. Le vote ne peut pas en tenir compte, un modèle appris le peut.
+
+- **Idée** : pour chaque item, apprendre un modèle (par exemple une régression
+  logistique multinomiale) qui donne la probabilité que l'item soit correct (1),
+  fautif (9) ou absent (0), à partir des trois codes des lecteurs.
+- **Autres variables possibles** :
+  - la lecture elle-même, ou sa classe (« m' », vide, majuscule seule…) ;
+  - les codes des items voisins (« S' » et « ils » tombent ensemble) ;
+  - des indicateurs de la copie : taux de non-unanimité sur toute la copie, mots non
+    alignés, échec d'un lecteur.
+- **Structure** : un modèle par item risque d'être instable sur les items rares.
+  Un modèle commun avec un effet par item (ou une régularisation vers le modèle
+  commun) est plus sûr.
+- **Ce que cela apporte en plus du code** : des probabilités calibrées. Le renvoi à
+  l'humain se ferait sur la probabilité d'erreur, et non plus sur la seule
+  unanimité, ce qui rejoint la piste des seuils de renvoi propres à chaque item.
+- **Comment le tester** : sur les fichiers existants, sans nouvel appel aux modèles.
+  Validation croisée par copie (une copie entière dans le même pli). Comparer au vote
+  le kappa, le biais et l'erreur résiduelle à taux de renvoi égal.
+- **Réutilisation pour la dictée 2025** : les modèles appris sur 2015 corrigeraient
+  directement 2025.
+- **Variante sans code expert** : le modèle de Dawid & Skene, déjà prévu dans la
+  méthodologie, estime la fiabilité de chaque lecteur par item à partir de leurs
+  seuls désaccords. Il pourrait être réajusté sur 2025 sans nouvelle correction
+  humaine, et servir de point de comparaison au modèle supervisé.
+- **Points d'attention** :
+  - les modèles par item ne se transfèrent que si le texte dicté est le même. Sinon,
+    il faut des variables qui décrivent l'item (élision, majuscule, ponctuation,
+    fréquence du mot) plutôt que son identité ;
+  - les scans, la cohorte et les versions des lecteurs peuvent changer d'une année à
+    l'autre. Il faudra vérifier la calibration sur un échantillon de 2025 corrigé à la
+    main ; le corpus 2021 peut servir de premier test de transfert ;
+  - le modèle apprend à reproduire l'expert 2015, y compris ses choix sur les cas
+    ambigus (« À » sur l'item 73).
+
+## 9. Résultats des tests (15/11/2026)
+
+### 9.1 Accepter « À » sur l'item 73 : gain net, mais la décision revient à la DEPP
+
+Le test recode les fichiers existants du corpus complet, sans nouvel appel aux
+modèles. Une lecture « À » de l'item 73 reçoit le code 1 ; les autres lectures gardent
+leur code. Le vote est ensuite recalculé. Cela touche 2 221 lectures du vote et 935
+items de gemma seul.
+
+| | Kappa | Accord item 73 | Biais | Fautes inventées | Erreur résiduelle (renvoi 18,9 %) |
+|---|---|---|---|---|---|
+| Vote, grille actuelle | 0,716 | 47,5 % | −0,3 pt | 6,2 % | 3,81 % |
+| **Vote, « À » accepté** | **0,721** | **67,0 %** | −0,6 pt | **5,8 %** | **3,64 %** |
+| gemma seul, grille actuelle | 0,693 | 40,2 % | +2,3 pt | 8,9 % | — |
+| gemma seul, « À » accepté | 0,699 | 62,7 % | +1,9 pt | 8,4 % | — |
+
+- L'item 73 passe de 47,5 % à 67 % d'accord. Le kappa global gagne 0,005, ce qui
+  correspond à un item sur 83.
+- Ce n'est **pas encore appliqué** dans la grille ni dans le code. C'est une
+  décision méthodologique, à valider avec la DEPP.
+- Une fois la décision prise, le plus simple serait d'ajouter « À » aux formes
+  acceptées de l'item dans `configs/grille_dictee_2015.json`.
+
+### 9.2 Règles de lecture n' / m' et lettre élidée : aucun effet, non retenues
+
+Deux règles ont été ajoutées à la consigne de passe 1 (option
+`prompt.regles_elisions`, config `dictee_two_stage_vote_elisions.yaml`) :
+
+- **Règle 10** : compter les jambages pour distinguer n' de m'. Devant un verbe,
+  n' est plus fréquent que m'.
+- **Règle 11** : une lettre suivie d'une apostrophe est un mot à part entière, à ne
+  pas oublier.
+
+Le test porte sur 100 copies (8 300 items), avec trois lecteurs. La comparaison se fait
+avec deux runs de référence sur les mêmes copies : le run complet, et la recombinaison
+des runs de croisement. L'écart entre ces deux références donne le bruit d'un run à
+l'autre, soit 0,006 de kappa pour le vote.
+
+| | Vote | qwen3-8-27b | gemma b4 | qwen3-6 |
+|---|---|---|---|---|
+| Référence (run complet) | 0,740 | 0,672 | 0,716 | 0,652 |
+| Référence bis (croisements) | 0,746 | 0,679 | 0,717 | 0,664 |
+| Règles d'élision | 0,739 | 0,686 | **0,694** | 0,659 |
+
+Part de chaque forme parmi toutes les lectures, les trois lecteurs cumulés :
+
+| Item | Forme | Référence | Règles d'élision |
+|---|---|---|---|
+| 17 « n' » | lu « m' » | 19 % | 21 % |
+| 35 « n' » | lu « m' » | 15 % | 14 % |
+| 33 « S' » | vide | 14 % | 12 % |
+| 34 « ils » | lu « Ils » | 8 % | 7 % |
+
+- **Les lecteurs n'appliquent pas les règles.** La confusion n / m et l'oubli du S'
+  restent au même niveau.
+- **Le vote ne bouge pas** : 0,739, contre 0,740 et 0,746 pour les références.
+- **gemma perd 0,022**, surtout sur la ponctuation (0,621 → 0,587). Une consigne plus
+  longue semble le distraire. Les deux qwen varient dans le bruit.
+- **Conclusion** : l'option reste dans le code, désactivée par défaut, mais n'est pas
+  retenue. La confusion n / m relève de ce que le modèle voit, pas de ce qu'on lui
+  demande. Des scans en niveaux de gris seraient la piste la plus directe.
+
+## 10. Limites
 
 - **Le code expert est l'unique référence.** Faute de double correction, on ne sait
   pas quelle part des écarts relève d'une hésitation légitime entre correcteurs humains.

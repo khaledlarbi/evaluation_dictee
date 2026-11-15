@@ -122,6 +122,16 @@ les non-unanimes à l'humain : 18,9 % des items renvoyés, 3,8 % d'erreur résid
   manquent au run à un lecteur. Le vote les couvre ; 1 copie reste en échec dans le
   vote.
 
+## 7. Élisions et majuscules (15/11/2026)
+
+Diagnostic et tests détaillés dans
+[rapport_vote_et_diagnostic_items.md](rapport_vote_et_diagnostic_items.md).
+
+| Tentative | Résultat | Retenu |
+|---|---|---|
+| Accepter « À » pour « A » (item 73), par recodage du corpus complet | vote 0,716 → 0,721 ; item 73 : 47,5 % → 67 % d'accord | en attente de la DEPP (changement de grille) |
+| Règles de lecture n' / m' et lettre élidée en passe 1 (100 copies) | vote 0,739 contre 0,740 et 0,746 pour les références ; m' toujours lu autant ; gemma −0,022 | non |
+
 ## Reste à faire
 
 - Demander à la DEPP des scans en niveaux de gris, s'ils existent en amont.

@@ -424,7 +424,8 @@ class TwoStageScorer(Scorer):
             copy,
             _avec_consigne_bandes(
                 build_transcription_passe1_prompt(
-                    read_final_state=self.prompt_config.read_final_state
+                    read_final_state=self.prompt_config.read_final_state,
+                    regles_elisions=self.prompt_config.regles_elisions,
                 ),
                 len(urls),
             ),

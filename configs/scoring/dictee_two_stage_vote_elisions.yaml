@@ -1,0 +1,108 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  Run scoring dictée — MÉTHODE B, VOTE À TROIS LECTEURS + RÈGLES D'ÉLISION
+#  Expérimentation du 15/11/2026 : identique à dictee_two_stage_vote.yaml, avec
+#    prompt.regles_elisions (passe 1 : n' / m' par les jambages, lettre élidée en
+#    début de phrase). Diagnostic : docs/rapport_vote_et_diagnostic_items.md, § 7.
+#    Test sur 100 copies, comparé au run de référence sur les mêmes copies.
+# ═══════════════════════════════════════════════════════════════════════════
+#  Variante de dictee_two_stage_deux_passes.yaml avec `extra_readers` :
+#    Chaque lecteur (model + extra_readers) lit la copie à l'aveugle (passe 1) ;
+#    sa transcription est alignée localement sur les items puis codée par
+#    model_stage2. Code retenu par item = code donné par au moins deux lecteurs ;
+#    model ne tranche que s'il n'y a pas de majorité (trois codes différents, ou
+#    un lecteur en échec et les deux autres en désaccord : 0,4 % des items).
+#    Confiance = part des lecteurs qui donnent ce code : 1 si les trois
+#    concordent, 2/3 si deux sur trois, 1/3 si tous diffèrent → courbe de renvoi
+#    humain.
+#  Image : gemma4-26b-moe lit la zone d'écriture recadrée en 4 bandes (il réduit
+#    toute image à ~256 tokens : page entière = ~113 px par token, 4 bandes =
+#    ~42 px). Les deux qwen lisent la page telle quelle : ils la voient déjà en
+#    pleine résolution (32 px par token), l'agrandir n'a rien apporté.
+#  Mesuré le 13/11/2026 sur 50 copies (recombinaison des lectures) : kappa 0,739,
+#    biais +0,1 pt, 10,3 % d'items discordants qwen3-8-27b/gemma (renvoi humain)
+#    contre 0,727 et 15,5 % avec gemma sur la page entière.
+#    Coût : 3 lectures + 3 codages par copie.
+#  Sortie : dictee_two_stage_vote_elisions_qwen3-8-27b_qwen3-6-35b-moe_gemma4-26b-moe-crop-b4
+#  JSONL : en plus, codes_lecteurs (par item) et transcriptions_lecteurs.
+#  Bras d'expérience : export vers predictions/experimentations/ (D9).
+# ───────────────────────────────────────────────────────────────────────────
+#  Étape 1 : un VLM transcrit l'image (raw_transcription).
+#  Étape 2 : un LLM texte code chaque item à partir de la transcription + grille.
+#  Dérivé de dictee_REFERENCE.yaml : voir ce fichier pour la doc exhaustive de
+#  chaque paramètre (les champs omis reprennent leur valeur par défaut).
+#
+#  Lancer : uv run scripts/run_benchmark.py --config configs/scoring/dictee_two_stage_vote.yaml
+#  Sortie  : data/processed/dictee_two_stage_vote_<modele>_predictions.jsonl
+#            (approach="two_stage" ; suffixe = modèle étape 1, + modèle étape 2 s'il diffère)
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: dictee_two_stage_vote_elisions
+seed: 42
+concurrency: 12
+
+approach: two_stage
+
+# Étape 1 = transcription (doit être multimodal pour lire l'image).
+model:
+  # Lecteur principal : meilleur lecteur seul mesuré le 13/11/2026 sur 50 copies
+  # (kappa 0,687 contre 0,650 pour qwen3-6-35b-moe et 0,629 pour gemma4-26b-moe).
+  name: qwen3-8-27b
+  kind: vlm
+  temperature: 0.0
+  max_tokens: 16384
+  request_logprobs: true
+  max_retries: 2
+  disable_thinking: true
+  structured_output: true
+
+# Étape 2 = codage textuel (modèle texte seul, obligatoire en two_stage).
+model_stage2:
+  name: qwen3-6-35b-moe # ou gemma4-26b-moe
+  kind: llm
+  temperature: 0.0
+  max_tokens: 8192
+  structured_output: true
+  disable_thinking: true
+  max_retries: 2
+
+
+# Lecteurs supplémentaires (passe 1 uniquement ; codage par model_stage2).
+extra_readers:
+  - name: gemma4-26b-moe
+    kind: vlm
+    temperature: 0.0
+    max_tokens: 16384
+    request_logprobs: true
+    max_retries: 2
+    disable_thinking: true
+    structured_output: true
+    # 50 copies, gemma seul : kappa 0,629 (page entière) → 0,722 (recadrage + 4 bandes).
+    image:
+      recadrage: true
+      n_bandes: 4
+  - name: qwen3-6-35b-moe
+    kind: vlm
+    temperature: 0.0
+    max_tokens: 16384
+    request_logprobs: true
+    max_retries: 2
+    disable_thinking: true
+    structured_output: true
+data:
+  corpus: dictee
+  images_path: s3://projet-production-ecrits-depp/dictee_2015/
+  labels_path: s3://projet-production-ecrits-depp/resultat_dictee_2015.csv
+  grid_path: configs/grille_dictee_2015.json
+  limit: null
+
+grid:
+  scheme: simplifiee
+
+prompt:
+  method: B
+  n_few_shot: 0
+  enforce_faithful: true
+  read_final_state: true
+  chain_of_thought: false
+  transcription_verification: true
+  regles_elisions: true

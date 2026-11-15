@@ -159,6 +159,10 @@ class PromptConfig(BaseModel):
     # (sur-correction) et erreur de lecture prise pour une faute. La transcription de la
     # passe 2 alimente l'étape de codage. Sans effet en end_to_end.
     transcription_verification: bool = False
+    # two_stage, passe 1 : règles de lecture des élisions (n' / m', lettre élidée en
+    # début de phrase). Expérimentation du 15/11/2026, voir
+    # docs/rapport_vote_et_diagnostic_items.md, section 7.
+    regles_elisions: bool = False
 
 
 class ExperimentConfig(BaseModel):

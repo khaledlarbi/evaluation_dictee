@@ -348,6 +348,7 @@ _TEMPLATE_TRANSCRIPTION_PASSE1: list[ChatMessageDict] = [
             "comme elle est tracée : majuscule si l'élève a écrit une majuscule, "
             "minuscule s'il a écrit une minuscule. Ne mets pas de majuscule au seul motif "
             "qu'un point précède, et ne l'oublie pas si elle est tracée.\n"
+            "{{regles_elisions}}"
             "{{consigne_ratures}}"
         ),
     },
@@ -711,6 +712,22 @@ def build_transcription_prompt(read_final_state: bool = True) -> list[ChatMessag
     )
 
 
+# Règles de lecture des élisions (expérimentation du 15/11/2026). Diagnostic sur le
+# corpus 2015 (3 lecteurs) : « n' » lu « m' » dans 80 à 85 % des écarts sur ces items,
+# et la lettre élidée en début de phrase oubliée (« S'ils » lu « Ils »). Les règles
+# restent générales : la passe 1 se fait sans le texte de la dictée.
+_REGLES_ELISIONS = (
+    "10 - Devant une apostrophe, distingue n' et m' en comptant les jambages : deux "
+    "pour un n, trois pour un m. Un jambage de plus ou de moins suffit à changer la "
+    "lettre : regarde-les un par un. Devant un verbe, n' (négation) est bien plus "
+    "fréquent que m'.\n"
+    "11 - Une lettre suivie d'une apostrophe (S', L', D', J', C', N', Qu') forme un mot "
+    "à part entière, souvent collé au mot suivant, en particulier en début de phrase. "
+    "Ne l'oublie pas : transcris-la avec son apostrophe. Le mot qui suit garde la "
+    "casse avec laquelle il est tracé, en général une minuscule.\n"
+)
+
+
 def _consigne_ratures_passe1(read_final_state: bool) -> str:
     """Consigne « ratures » de la passe 1 (décision DEPP : état final).
 
@@ -723,11 +740,15 @@ def _consigne_ratures_passe1(read_final_state: bool) -> str:
     return ("Ratures : " + _CONSIGNE_RATURES_TRANSCRIPTION) if read_final_state else ""
 
 
-def build_transcription_passe1_prompt(read_final_state: bool = True) -> list[ChatMessageDict]:
+def build_transcription_passe1_prompt(
+    read_final_state: bool = True, regles_elisions: bool = False
+) -> list[ChatMessageDict]:
     """Prompt PASSE 1 : transcription à l'aveugle (sans référence), mots incertains signalés.
 
     Args:
         read_final_state: si True, ajoute la consigne de ne lire que l'état final (ratures).
+        regles_elisions: si True, ajoute les règles de lecture n' / m' et de la lettre
+            élidée (expérimentation).
 
     Returns:
         Les messages du prompt compilés, prêts à recevoir l'image.
@@ -735,7 +756,10 @@ def build_transcription_passe1_prompt(read_final_state: bool = True) -> list[Cha
     return _compile_prompt(
         PROMPT_TRANSCRIPTION_PASSE1,
         fallback=_TEMPLATE_TRANSCRIPTION_PASSE1,
-        variables={"consigne_ratures": _consigne_ratures_passe1(read_final_state)},
+        variables={
+            "consigne_ratures": _consigne_ratures_passe1(read_final_state),
+            "regles_elisions": _REGLES_ELISIONS if regles_elisions else "",
+        },
     )
 
 
