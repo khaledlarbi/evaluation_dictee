@@ -439,15 +439,105 @@ pli : le modèle n'est jamais jugé sur une copie qu'il a vue.
   sur un pli de test, le kappa atteint 0,757 avec 50 copies d'apprentissage, 0,769
   avec 200, 0,787 avec 2 739 (vote : 0,710).
 
-**Ce que ce résultat ne dit pas encore.** Le modèle apprend les défauts propres à
-chaque lecteur, sur chaque item, et les conventions de l'expert 2015 (« À » accepté).
-Il ne se transpose que si le texte, les lecteurs et les consignes restent les mêmes.
-Le test de transposition à 2021 est prêt (config `dictee2021_two_stage_vote.yaml`,
-1 000 copies tirées au hasard ; script `scripts/agregation_apprise.py --cible`), mais
-le run n'a pas encore été lancé. Un essai à blanc, sur les 100 copies de 2015 relues
-avec la consigne des règles d'élision, montre que le modèle appris sur la consigne
-d'origine reste bien meilleur que le vote quand la consigne change (kappa 0,829
-contre 0,712 sur 50 copies de test).
+- **Les log-probabilités n'ont pas pu servir.** L'option `request_logprobs` existe
+  dans la config, mais le code ne demande ni n'enregistre les log-probabilités. Les
+  utiliser suppose d'écrire ce code, puis de relancer les lecteurs.
+
+### 9.4 Transposition à 2021 : le modèle appris sur 2015 suffit
+
+*Résultats intermédiaires, sur 485 des 1 000 copies du run 2021 (5 tirages, de 285
+à 385 copies de test). Le run complet et l'analyse finale sont en cours.*
+
+- **Données.** La dictée 2021 reprend le même texte, avec les mêmes 83 items ;
+  l'expert code sur la grille complète (3/4/5 regroupés en erreur). Run :
+  `configs/scoring/dictee2021_two_stage_vote.yaml`, vote à trois lecteurs à
+  l'identique de 2015. Il porte sur 1 000 copies tirées au hasard, parce que les
+  premières copies ne sont pas représentatives.
+- **Protocole.** On tire 100 ou 200 copies de 2021 « corrigées », et on évalue sur les
+  autres trois modèles (logistique par item avec formes lues) : appris sur 2015
+  seul, sur ces copies 2021 seules, ou sur les deux. Script :
+  `scripts/agregation_apprise.py --cible`.
+
+| Copies 2021 pour apprendre | 100 | 200 |
+|---|---|---|
+| Vote, kappa | 0,746 | 0,751 |
+| **Appris sur 2015 seul, kappa** | **0,823** | **0,831** |
+| Appris sur 2021 seul, kappa | 0,778 | 0,796 |
+| Appris sur 2015 + 2021, kappa | 0,824 | 0,833 |
+| Erreur résiduelle à 19 % de renvoi : vote / appris sur 2015 | 3,8 % / 1,7 % | 3,8 % / 1,7 % |
+
+- **Le gain sur le vote se maintient en 2021** (+0,08 de kappa). Les copies de 2021
+  n'apportent presque rien de plus ; seules, 100 à 200 copies ne suffisent pas.
+- **Évolution du taux de faute de 2015 à 2021** (tirage à 200 copies) : +2,6 pt selon
+  l'expert. Le vote estime +1,8 pt, soit environ 30 % de la hausse manquée. Le
+  modèle appris sur 2015 estime +2,2 pt. Le modèle appris sur 2021 seul estime
+  +2,7 pt à 200 copies, mais +3,1 pt (pour +2,4 pt réels) à 100 copies : il est moins
+  stable.
+
+### 9.5 Sur-détection, sous-détection et sur-correction
+
+*Sur 663 copies 2021, avec le modèle appris sur 2015 seul.*
+
+| | Fautes ratées | Fautes inventées | Ponct. présente codée absente | Ponct. absente codée présente |
+|---|---|---|---|---|
+| gemma seul | 12,9 % | 8,4 % | 6,3 % | 8,1 % |
+| Vote | 18,0 % | 5,5 % | 4,7 % | **7,8 %** |
+| Modèle 2015 | 15,3 % | **2,6 %** | **1,6 %** | 27,9 % |
+| Modèle 2015, sans biais | **12,7 %** | 3,6 % | **1,6 %** | 27,9 % |
+
+- **Le modèle invente deux fois moins de fautes que le vote, et en rate moins.**
+- **Son point faible est l'oubli de ponctuation** : 28 % de ces oublis passent
+  inaperçus, contre 8 % pour le vote. Le kappa de ponctuation ne le faisait pas voir.
+- **La sur-correction à la lecture fixe un plancher.**
+  - Parmi les mots que l'expert code en faute, qwen3-8-27b en lit 22 % sous la forme
+    correcte, qwen3-6-35b 26 % et gemma 13 %.
+  - Les trois lecteurs à la fois en lisent 6,5 % sous la forme correcte (7,0 % en
+    2015). Aucune agrégation ne peut retrouver ces fautes-là.
+  - Elles représentent 42 % des fautes que le modèle rate encore.
+- **Les taux d'erreur de lecture restent stables de 2015 à 2021**, ce qui explique que
+  le modèle se transpose.
+
+### 9.6 Décision sans biais étendue au code 0 : sans effet
+
+La règle « sans biais » pondère P(9) jusqu'à ce que la part de 9 prédits égale la
+somme des P(9). On l'a étendue au code 0, avec un poids pour les mots et un pour la
+ponctuation (`decision_9_0`). Test sur 739 copies 2021 :
+
+| | Kappa | Kappa ponct. | Ponct. absente codée présente | Ponct. présente codée absente |
+|---|---|---|---|---|
+| Vote | 0,748 | 0,725 | 10,2 % | 4,6 % |
+| Modèle, sans biais (9) | 0,826 | 0,740 | 29,8 % | 1,5 % |
+| Modèle, sans biais (9 et 0) | 0,826 | 0,733 | 31,2 % | 1,5 % |
+
+- **Aucun gain.** La somme des P(0) prévoit 8,0 % de ponctuations absentes, l'expert
+  en compte 9,4 %. Le modèle sous-estime donc légèrement les absences en 2021, et
+  surtout il les sépare mal des signes présents. Ce n'est pas un problème de seuil.
+- **Pistes** : apprendre aussi sur des copies 2021 (la fréquence des oublis a pu
+  changer d'une année à l'autre), ou ajouter des variables propres à la ponctuation
+  (fin de ligne, majuscule qui suit). Non testées.
+
+### 9.7 Démarche en bref
+
+1. **Diagnostic** (section 7) : les erreurs viennent de la lecture, et sont
+   systématiques par item et par lecteur.
+2. **Idée** (section 8) : apprendre, pour chaque item, ce que vaut chaque combinaison
+   des lectures, au lieu de compter les voix.
+3. **Test sur 2015** (9.3), sur les fichiers existants, sans nouvel appel aux modèles :
+   kappa de 0,715 à 0,825, renvoi humain de 19 % à 5 % des items pour la même erreur
+   résiduelle.
+4. **Transposition à 2021** (9.4), avec un nouveau run de 1 000 copies : le modèle
+   appris sur 2015 garde son avance et estime mieux l'évolution du taux de faute.
+5. **Limites mesurées** (9.5, 9.6) : un plancher de sur-correction à la lecture
+   (6,5 % des fautes), et des oublis de ponctuation moins bien vus que par le vote.
+6. **Pour 2025** : réutiliser le modèle appris sur 2015 et 2021, à condition que le
+   texte, les lecteurs et les consignes restent les mêmes. Contrôler sur un petit
+   échantillon corrigé à la main.
+
+**Code** (branche `feat/agregation-apprise`) : `scripts/agregation_apprise.py`
+(validation croisée, transposition `--cible`, formes lues `--formes`), chargement du
+CSV 2021 et tirage aléatoire `data.sample_seed`, champ de grille `formes_acceptees`
+et variante `configs/grille_dictee_2015_A_accentue.json` (« À » sur l'item 73, en
+attente de la DEPP).
 
 ## 10. Limites
 

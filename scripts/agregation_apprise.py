@@ -344,6 +344,37 @@ def decision(p: np.ndarray, sans_biais: bool) -> np.ndarray:
     return np.array(CODES)[q.argmax(1)]
 
 
+def decision_9_0(p: np.ndarray, mot: np.ndarray, n_tours: int = 4) -> np.ndarray:
+    """Décision sans biais étendue au code 0.
+
+    Trois poids : un pour P(9), un pour P(0) sur les mots, un pour P(0) sur la
+    ponctuation. Chacun est ajusté (bissection, tours alternés) pour que la part de
+    codes prédits égale la part attendue Σ P / n, sur tous les items pour le 9, sur
+    chaque type d'item pour le 0. Aucun code expert n'est utilisé.
+    """
+    lw = np.zeros((len(p), 3))  # log-poids par item et par code
+
+    def pred() -> np.ndarray:
+        return (p * np.exp(lw)).argmax(1)
+
+    def ajuster(code: int, masque: np.ndarray) -> None:
+        cible = p[masque, code].mean()
+        lo, hi = -6.0, 6.0
+        for _ in range(40):
+            w = (lo + hi) / 2
+            lw[masque, code] = w
+            part = (pred()[masque] == code).mean()
+            lo, hi = (w, hi) if part < cible else (lo, w)
+        lw[masque, code] = (lo + hi) / 2
+
+    tous = np.ones(len(p), dtype=bool)
+    for _ in range(n_tours):
+        ajuster(1, tous)
+        ajuster(2, mot)
+        ajuster(2, ~mot)
+    return np.array(CODES)[pred()]
+
+
 def indicateurs(df: pd.DataFrame, pred: np.ndarray) -> dict:
     y = df["y"].to_numpy()
     mot = (df["type"] == "mot").to_numpy()
