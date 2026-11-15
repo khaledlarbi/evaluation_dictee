@@ -394,6 +394,61 @@ Part de chaque forme parmi toutes les lectures, les trois lecteurs cumulés :
   retenue. La confusion n / m relève de ce que le modèle voit, pas de ce qu'on lui
   demande. Des scans en niveaux de gris seraient la piste la plus directe.
 
+### 9.3 Agrégation apprise : le meilleur résultat, sans nouvel appel aux modèles
+
+La piste de la section 8 a été testée sur le corpus complet (3 424 copies, 283 770
+items), sur les fichiers existants. Au lieu du vote, un modèle donne pour chaque item
+la probabilité du code 1, 9 ou 0, à partir de :
+
+- **les codes des trois lecteurs** ;
+- **le contexte** : taux de non-unanimité de la copie, taux de 9 et de 0 vus par
+  chaque lecteur sur la copie, nombre de lecteurs qui voient une faute sur les items
+  voisins ;
+- **les formes lues** : chaque transcription est réalignée pour retrouver ce que
+  chaque lecteur a écrit pour l'item. On en tire la classe de la lecture (identique,
+  faute connue de la grille, casse, accent, apostrophe, vide, autre), la distance à la
+  forme attendue, l'accord des lecteurs sur la forme, et le nombre de lecteurs qui
+  lisent chacune des formes les plus fréquentes de l'item (« m' » pour « n' »).
+
+L'évaluation se fait par validation croisée en 5 plis, une copie entière dans le même
+pli : le modèle n'est jamais jugé sur une copie qu'il a vue.
+
+| | Kappa | Kappa ponct. | Biais | Fautes ratées | Fautes inventées | Erreur résiduelle (renvoi 19 %) | Renvoi pour 3,8 % d'erreur |
+|---|---|---|---|---|---|---|---|
+| Vote majoritaire | 0,715 | 0,627 | −0,3 pt | 19,6 % | 6,3 % | 3,80 % | 19 % |
+| Table : 3 codes × item | 0,793 | 0,707 | −1,1 pt | 17,7 % | 3,8 % | 1,88 % | 8,5 % |
+| Logistique par item, + contexte | 0,800 | 0,705 | −1,0 pt | 16,9 % | 3,8 % | 1,82 % | 7,8 % |
+| **Logistique par item, + formes lues** | **0,825** | **0,713** | −1,4 pt | 15,6 % | **2,7 %** | **1,49 %** | **5,3 %** |
+| idem, décision sans biais | 0,823 | 0,713 | **0,0 pt** | **12,7 %** | 4,0 % | — | — |
+
+- **Le gain tient presque entier dans la table.** Apprendre, pour chaque item, ce que
+  vaut chaque combinaison des trois codes fait passer le kappa de 0,715 à 0,793. Le
+  contexte ajoute 0,007, les formes lues 0,025.
+- **Les formes lues visent bien les confusions du diagnostic.** Accord par item, vote
+  → logistique avec formes : n' (17) 79 → 96 %, n' (35) 70 → 94 %, S' (33) 74 → 89 %,
+  ils (34) 86 → 93 %, A (73) 48 → 93 %, Martine (59) 87 → 97 %, ce (74) 69 → 81 %.
+- **Les probabilités sont calibrées** (erreur de calibration 0,5 %). Leur moyenne
+  estime le taux de faute à 19,65 %, pour 19,64 % selon l'expert. La décision « sans
+  biais » ajuste le poids du code 9 jusqu'à ce que la part de 9 prédits égale cette
+  moyenne, sans regarder le code expert : le biais tombe à zéro pour 0,002 de kappa.
+- **Le renvoi à l'humain devient bien moins coûteux** : pour l'erreur résiduelle du
+  vote (3,8 %), il suffit de renvoyer 5,3 % des items au lieu de 19 %.
+- **Un modèle commun** (gradient boosting, l'item en variable) fait aussi bien que la
+  logistique par item (0,823), sans la dépasser.
+- **Peu de copies corrigées suffisent** pour la table et la logistique sans formes :
+  sur un pli de test, le kappa atteint 0,757 avec 50 copies d'apprentissage, 0,769
+  avec 200, 0,787 avec 2 739 (vote : 0,710).
+
+**Ce que ce résultat ne dit pas encore.** Le modèle apprend les défauts propres à
+chaque lecteur, sur chaque item, et les conventions de l'expert 2015 (« À » accepté).
+Il ne se transpose que si le texte, les lecteurs et les consignes restent les mêmes.
+Le test de transposition à 2021 est prêt (config `dictee2021_two_stage_vote.yaml`,
+1 000 copies tirées au hasard ; script `scripts/agregation_apprise.py --cible`), mais
+le run n'a pas encore été lancé. Un essai à blanc, sur les 100 copies de 2015 relues
+avec la consigne des règles d'élision, montre que le modèle appris sur la consigne
+d'origine reste bien meilleur que le vote quand la consigne change (kappa 0,829
+contre 0,712 sur 50 copies de test).
+
 ## 10. Limites
 
 - **Le code expert est l'unique référence.** Faute de double correction, on ne sait
