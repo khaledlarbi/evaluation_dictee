@@ -94,8 +94,34 @@ sur les paires alignées). Une copie absente d'un run : comparaison sur 99 copie
   3,8 % d'erreur résiduelle) reste la meilleure approche, quel que soit le codeur.
   Le choix du codeur peut se faire sur le coût ou la vitesse.
 
+## 6. Corpus complet (3 413 copies, 282 860 items, 14-15/11/2026)
+
+Configs `dictee_two_stage_gemma_bandes.yaml` et `dictee_two_stage_vote.yaml`, lancées
+par `launchers/launch_eval.sh --no-export`. Comparaison sur les items évaluables
+communs (copies vierges et items illisibles écartés).
+
+| | Accord | Kappa | Mots | Ponct. | Biais | Fautes ratées | Fautes inventées | Ponct. non vue |
+|---|---|---|---|---|---|---|---|---|
+| gemma recadrage + 4 bandes (1 lecteur) | 88,3 % | 0,693 | 0,697 | 0,586 | +2,3 pt | 14,4 % | 8,9 % | 6,7 % |
+| **Vote à trois lecteurs** | **89,8 %** | **0,716** | **0,718** | **0,626** | **−0,3 pt** | 19,6 % | **6,2 %** | **5,6 %** |
+
+Taux de faute de l'expert : 19,6 % ; gemma seul en prédit 21,9 %, le vote 19,3 %.
+
+Confiance du vote : 3 lecteurs d'accord sur 81,1 % des items (95,3 % de codes
+justes), 2 sur 3 sur 18,4 % (66,9 %), tous différents sur 0,6 % (32,5 %). Renvoyer
+les non-unanimes à l'humain : 18,9 % des items renvoyés, 3,8 % d'erreur résiduelle
+(accord 96,2 %).
+
+- Les kappas du corpus complet sont environ 0,02 à 0,03 en dessous de ceux des
+  échantillons de 50 à 100 copies (0,715 et 0,745) : les premières copies étaient
+  un peu plus faciles que la moyenne.
+- Le classement et les profils d'erreur se confirment : gemma seul rate moins de
+  fautes mais en invente plus (biais +2,3 pt) ; le vote est meilleur sur tous les
+  indicateurs sauf les fautes ratées, avec un biais quasi nul.
+- gemma n'a pas pu lire 11 copies (3 essais sans transcription exploitable) : elles
+  manquent au run à un lecteur. Le vote les couvre ; 1 copie reste en échec dans le
+  vote.
+
 ## Reste à faire
 
-- Lancer la config de vote telle quelle sur 50 copies, pour confirmer le 0,739 hors
-  recombinaison.
 - Demander à la DEPP des scans en niveaux de gris, s'ils existent en amont.
