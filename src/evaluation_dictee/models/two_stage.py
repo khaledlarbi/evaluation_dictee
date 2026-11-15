@@ -17,7 +17,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from PIL import Image
 
 from evaluation_dictee.config import ModelConfig, PromptConfig
-from evaluation_dictee.data.grid import GridItem
+from evaluation_dictee.data.grid import GridItem, appliquer_formes_acceptees
 from evaluation_dictee.data.loaders import Copy, load_image
 from evaluation_dictee.data.pretraitement import preparer
 from evaluation_dictee.evaluation.ensemble import vote_majoritaire
@@ -695,6 +695,8 @@ class TwoStageScorer(Scorer):
             )
 
         ecrits = alignement.ecrits() if alignement is not None else None
+        if ecrits is not None:
+            ecrits = appliquer_formes_acceptees(ecrits, self._items_by_id)
         prediction = self._code_text(copy, reference_text or "", transcription, ecrits)
         prediction.n_attempts = n_attempts
         prediction.raw_transcription = transcription

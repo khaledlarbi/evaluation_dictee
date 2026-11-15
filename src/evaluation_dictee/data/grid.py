@@ -6,7 +6,7 @@ Le texte de référence est désormais dérivé de la grille.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -19,6 +19,9 @@ class GridItem:
     ex_lexicale: list[str]
     ex_grammaticale: list[str]
     ex_les_deux: list[str]
+    # Formes acceptées comme correctes en plus de l'attendue (ex. « À » pour « A »).
+    # Remplacées par l'attendue avant le codage : décision de grille, pas du modèle.
+    formes_acceptees: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -49,7 +52,28 @@ def load_grid(path: str) -> DictationGrid:
             ex_lexicale=it.get("ex_lexicale", []),
             ex_grammaticale=it.get("ex_grammaticale", []),
             ex_les_deux=it.get("ex_les_deux", []),
+            formes_acceptees=it.get("formes_acceptees", []),
         )
         for it in raw["items"]
     ]
     return DictationGrid(reference_text=raw["reference_text"], items=items)
+
+
+def appliquer_formes_acceptees(
+    ecrits: dict[str, str], items_by_id: dict[str, GridItem]
+) -> dict[str, str]:
+    """Remplace par la forme attendue tout mot écrit listé dans `formes_acceptees`.
+
+    Args:
+        ecrits: mot écrit par item (alignement local).
+        items_by_id: items de la grille, par identifiant.
+
+    Returns:
+        Une copie de `ecrits` où les formes acceptées sont ramenées à l'attendue.
+    """
+    out = dict(ecrits)
+    for item_id, ecrit in ecrits.items():
+        it = items_by_id.get(item_id)
+        if it is not None and ecrit.replace("’", "'") in it.formes_acceptees:
+            out[item_id] = it.attendu
+    return out
