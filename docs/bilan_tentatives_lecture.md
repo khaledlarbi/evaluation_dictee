@@ -122,15 +122,43 @@ les non-unanimes à l'humain : 18,9 % des items renvoyés, 3,8 % d'erreur résid
   manquent au run à un lecteur. Le vote les couvre ; 1 copie reste en échec dans le
   vote.
 
-## 7. Élisions et majuscules (15/11/2026)
+## 7. Items non unanimes, élisions et majuscules (15/11/2026)
 
-Diagnostic et tests détaillés dans
+Détail et définitions (écart, faux écart, faute ratée, classes de lecture) :
 [rapport_vote_et_diagnostic_items.md](rapport_vote_et_diagnostic_items.md).
+
+### 7.1 Où se concentrent les items non unanimes (corpus complet)
+
+- La moitié des items non unanimes du vote tombe sur **25 des 83 items**.
+- Trois familles :
+  - **élisions et majuscules** : S' (33), n' (17 et 35), A (73), ce (74), ils (34),
+    Aussitôt (67), Martine (59) ;
+  - **mots où les élèves font souvent des fautes** : verrons, retrouvé, inquiets,
+    perdus, rentrés… La corrélation avec le taux de faute de l'expert est de 0,60 ;
+  - **le tiret** (item 22).
+
+### 7.2 Diagnostic lecture ou alignement (3 lecteurs, corpus complet)
+
+| Constat | Mesure |
+|---|---|
+| L'alignement n'est pas en cause | fusion de deux items en un mot : 0 % des écarts ; mot en trop voisin : 2 % |
+| Le codage n'est pas en cause | lecture identique à l'attendu mais codée faute : 0 % |
+| Les fautes ratées sont des sur-corrections à la lecture | 100 % sont lues exactement comme la forme attendue |
+| « n' » lu « m' » | 85 % (item 17) et 80 % (item 35) des faux écarts, ≈ 2 900 lectures |
+| « S'ils » lu « Ils » | S' vide dans 48 % des faux écarts de l'item 33 ; « Ils » dans 59 % de ceux de l'item 34 |
+| « A » lu « À » | 39 % des faux écarts de l'item 73. L'expert l'accepte, mais la grille ne le prévoit pas |
+| « A » lu « Et » / « et » | 37 % des faux écarts de l'item 73 |
+| « ce » (74) | 2 582 fautes ratées : le lecteur lit « ce » là où l'expert voit une faute |
+
+### 7.3 Tests
 
 | Tentative | Résultat | Retenu |
 |---|---|---|
-| Accepter « À » pour « A » (item 73), par recodage du corpus complet | vote 0,716 → 0,721 ; item 73 : 47,5 % → 67 % d'accord | en attente de la DEPP (changement de grille) |
-| Règles de lecture n' / m' et lettre élidée en passe 1 (100 copies) | vote 0,739 contre 0,740 et 0,746 pour les références ; m' toujours lu autant ; gemma −0,022 | non |
+| Accepter « À » pour « A » (item 73), par recodage du corpus complet sans appel aux modèles | vote 0,716 → **0,721** ; accord item 73 : 47,5 % → 67 % ; erreur résiduelle 3,81 → 3,64 % ; gemma seul 0,693 → 0,699 | en attente de la DEPP (changement de grille) |
+| Règles de lecture en passe 1 : n' / m' par les jambages, lettre élidée à ne pas oublier (option `prompt.regles_elisions`, 100 copies, trois lecteurs) | vote 0,739, contre 0,740 et 0,746 pour deux runs de référence sur les mêmes copies ; « m' » toujours lu autant (21 % contre 19 % sur l'item 17) ; gemma −0,022, surtout sur la ponctuation | non : les lecteurs n'appliquent pas la règle |
+
+Bruit d'un run à l'autre, mesuré entre les deux références sur 100 copies : environ
+0,006 de kappa pour le vote, et jusqu'à 0,012 pour un lecteur seul.
 
 ## Reste à faire
 
