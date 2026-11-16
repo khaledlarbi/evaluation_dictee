@@ -49,7 +49,8 @@ def _surligne_diff(ref_mots: list[str], hyp_mots: list[str]) -> tuple[str, str]:
         côté référence et en rouge côté hypothèse.
     """
     sm = difflib.SequenceMatcher(a=ref_mots, b=hyp_mots)
-    diff_ref, diff_hyp = set(), set()
+    diff_ref: set[int] = set()
+    diff_hyp: set[int] = set()
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag != "equal":
             diff_ref.update(range(i1, i2))

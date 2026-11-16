@@ -98,7 +98,7 @@ def filtrer_evaluables(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
     # Même règle que le pipeline : une copie MAJORITAIREMENT inexploitable sort en
     # entier, sinon seuls ses items concernés sortent. Deux règles divergentes
     # donneraient deux chiffres différents pour un même run selon l'outil qui le lit.
-    part = inexploitable.groupby(df["copy_id"]).mean()
+    part = inexploitable.astype(float).groupby(df["copy_id"]).mean()
     copies_hs = set(part[part > 0.5].index)
 
     a_retirer = inexploitable | df["copy_id"].isin(copies_hs)
