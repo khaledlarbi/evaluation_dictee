@@ -313,6 +313,20 @@ def m_boosting(tr: pd.DataFrame, te: pd.DataFrame, formes: bool) -> np.ndarray:
     return proba_pleine(clf, x(te))
 
 
+#: Identifiant de chaque modèle dans le nom de run exporté (segment « prompt » de la
+#: convention du site : minuscules, chiffres et tirets, sans tiret bas).
+SLUGS = {
+    "table (3 codes × item)": "table",
+    "logit/item, + copie + voisins": "logit-contexte",
+    "boosting, + copie + voisins": "boosting-contexte",
+    "logit/item, + formes lues": "logit-formes",
+    "boosting, + formes lues": "boosting-formes",
+}
+
+#: Champs volumineux du JSONL du vote non repris à l'export (le site ne les lit pas).
+CHAMPS_OMIS = ("transcriptions_lecteurs", "transcription_passe1")
+
+
 def modeles(formes: bool) -> dict:
     m = {
         "table (3 codes × item)": lambda tr, te: m_table(tr, te),
@@ -430,7 +444,60 @@ def preparer(path: str, grid_path: str, formes: bool) -> pd.DataFrame:
 ITEMS_DIAG = [17, 22, 33, 34, 35, 59, 67, 73, 74]
 
 
-def validation_croisee(df: pd.DataFrame, formes: bool, n_folds: int) -> None:
+def exporter(
+    df: pd.DataFrame, oof: dict[str, np.ndarray], source: str, dossier: str, annee: int
+) -> None:
+    """Écrit un JSONL par modèle et par décision, au format et au nom lus par le site.
+
+    Chaque fichier reprend le JSONL du vote ligne à ligne ; sur les items évaluables,
+    `y_pred` devient la décision du modèle (prédiction hors pli) et `confidence` la
+    probabilité du code retenu. Les items écartés gardent le code du vote : ils sortent
+    des métriques de toute façon.
+
+    Args:
+        df: items évaluables (sortie de `preparer`), dans l'ordre des lignes de `oof`.
+        oof: probabilités hors pli (1, 9, 0) par modèle.
+        source: JSONL du vote dont les fichiers sont dérivés.
+        dossier: dossier de sortie.
+        annee: année de la dictée, pour le nom de run.
+    """
+    nom_src = Path(source).name.removesuffix("_predictions.jsonl")
+    prefixe = f"dictee{annee}_two_stage_vote_"
+    if not nom_src.startswith(prefixe):
+        raise SystemExit(f"Nom de run du vote inattendu : {nom_src} (attendu : {prefixe}…)")
+    modeles_run = nom_src[len(prefixe) :]
+    cles = list(zip(df["copy"], df["item"], strict=True))
+    Path(dossier).mkdir(parents=True, exist_ok=True)
+    for k, p in oof.items():
+        for sb in (False, True):
+            pred = decision(p, sb)
+            conf = p[np.arange(len(p)), [CODES.index(c) for c in pred]]
+            par_cle = {
+                c: (y, float(v), [round(float(x), 4) for x in pr])
+                for c, y, v, pr in zip(cles, pred, conf, p, strict=True)
+            }
+            slug = "vote-" + SLUGS[k] + ("-sansbiais" if sb else "")
+            nom = f"dictee{annee}_two_stage_{slug}_{modeles_run}_predictions.jsonl"
+            sortie = Path(dossier) / nom
+            with open(source, encoding="utf-8") as fi, open(sortie, "w", encoding="utf-8") as fo:
+                for line in fi:
+                    if not line.strip():
+                        continue
+                    r = json.loads(line)
+                    for champ in CHAMPS_OMIS:
+                        r.pop(champ, None)
+                    r["y_pred_vote"] = r.get("y_pred")
+                    trouve = par_cle.get((r["copy_id"], r["item_id"]))
+                    if trouve is not None:
+                        r["y_pred"], r["confidence"], r["proba_1_9_0"] = trouve
+                    r["agregation"] = slug
+                    fo.write(json.dumps(r, ensure_ascii=False) + "\n")
+            print(f"  exporté : {sortie.name}", flush=True)
+
+
+def validation_croisee(
+    df: pd.DataFrame, formes: bool, n_folds: int
+) -> dict[str, np.ndarray]:
     mods = modeles(formes)
     oof = {k: np.zeros((len(df), 3)) for k in mods}
     for f, (itr, ite) in enumerate(GroupKFold(n_splits=n_folds).split(df, groups=df["copy"])):
@@ -493,6 +560,7 @@ def validation_croisee(df: pd.DataFrame, formes: bool, n_folds: int) -> None:
     tab["pos"] += 1
     tab = tab[tab["pos"].isin(ITEMS_DIAG)]
     print(tab.round(3).to_string(index=False))
+    return oof
 
 
 # ─── Mode 2 : transposition vers un autre corpus ─────────────────────────────
@@ -585,7 +653,15 @@ def main() -> None:
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--n-train", default="100,200", help="copies cible pour apprendre")
     ap.add_argument("--repetitions", type=int, default=5)
+    ap.add_argument(
+        "--export",
+        metavar="DOSSIER",
+        help="validation croisée : écrire un JSONL par modèle et par décision (format du site)",
+    )
+    ap.add_argument("--annee", type=int, default=2015, help="année du corpus, pour --export")
     args = ap.parse_args()
+    if args.export and args.cible:
+        ap.error("--export ne s'applique qu'à la validation croisée (sans --cible).")
 
     src = preparer(args.predictions, args.grid, args.formes)
     print(f"{src['copy'].nunique()} copies, {len(src)} items évaluables (source)")
@@ -599,7 +675,9 @@ def main() -> None:
             src, cib, args.formes, [int(x) for x in args.n_train.split(",")], args.repetitions
         )
     else:
-        validation_croisee(src, args.formes, args.folds)
+        oof = validation_croisee(src, args.formes, args.folds)
+        if args.export:
+            exporter(src, oof, args.predictions, args.export, args.annee)
 
 
 if __name__ == "__main__":
