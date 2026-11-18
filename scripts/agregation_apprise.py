@@ -323,8 +323,24 @@ SLUGS = {
     "boosting, + formes lues": "boosting-formes",
 }
 
-#: Champs volumineux du JSONL du vote non repris à l'export (le site ne les lit pas).
-CHAMPS_OMIS = ("transcriptions_lecteurs", "transcription_passe1")
+#: Seuls champs du JSONL du vote repris à l'export : ceux que lit le site, plus le
+#: code du vote et les probabilités. Le site garde tous ses runs en mémoire : avec
+#: les transcriptions (≈ 330 Mo par fichier), le runner GitHub manque de mémoire.
+CHAMPS_GARDES = (
+    "copy_id",
+    "item_id",
+    "y_true",
+    "y_pred",
+    "confidence",
+    "exclusion",
+    "blank",
+    "ink_ratio",
+    "model",
+    "model_stage2",
+    "approach",
+    "transcription",
+    "codes_lecteurs",
+)
 
 
 def modeles(formes: bool) -> dict:
@@ -483,9 +499,8 @@ def exporter(
                 for line in fi:
                     if not line.strip():
                         continue
-                    r = json.loads(line)
-                    for champ in CHAMPS_OMIS:
-                        r.pop(champ, None)
+                    complet = json.loads(line)
+                    r = {c: complet[c] for c in CHAMPS_GARDES if c in complet}
                     r["y_pred_vote"] = r.get("y_pred")
                     trouve = par_cle.get((r["copy_id"], r["item_id"]))
                     if trouve is not None:
@@ -495,9 +510,7 @@ def exporter(
             print(f"  exporté : {sortie.name}", flush=True)
 
 
-def validation_croisee(
-    df: pd.DataFrame, formes: bool, n_folds: int
-) -> dict[str, np.ndarray]:
+def validation_croisee(df: pd.DataFrame, formes: bool, n_folds: int) -> dict[str, np.ndarray]:
     mods = modeles(formes)
     oof = {k: np.zeros((len(df), 3)) for k in mods}
     for f, (itr, ite) in enumerate(GroupKFold(n_splits=n_folds).split(df, groups=df["copy"])):
