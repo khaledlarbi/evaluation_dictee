@@ -1,0 +1,623 @@
+---
+title: "Correction automatique de la dictée"
+subtitle: "Nouveautés depuis le fork et résultats obtenus"
+author: "Khaled Larbi"
+institute: "SSP Lab (Insee) × DEPP"
+date: today
+date-format: "DD/MM/YYYY"
+description: |
+  Ce qui a changé depuis le fork (commit f27d700, 08/10/2026) :
+  lecture en deux étapes, alignement local, vote à trois lecteurs,
+  agrégation apprise, et les gains mesurés sur les corpus 2015 et 2021.
+
+lang: fr
+
+slide-tone: false
+chalkboard: false
+jump-to-slide: true
+mouse-wheel: false
+transition: slide
+
+custom-toc: true
+
+format:
+  insee-clair-revealjs:
+    output-file: nouveautes-fork.html
+
+revealjs-plugins:
+  - pointer
+  - verticator
+---
+
+```{ojs}
+//| echo: false
+//| output: false
+// Couleurs (palette catégorielle validée, ordre fixe) et style commun des graphes
+c = ({
+  bleu: "#2a78d6", orange: "#eb6834", aqua: "#1baf7a", jaune: "#eda100",
+  gris: "#b5b3ac", encre: "#52514e"
+})
+style = ({fontSize: "17px", fontFamily: "inherit", background: "transparent", overflow: "visible"})
+pct = d3.format(".1~%")
+k3 = d3.format(".3f")
+```
+
+## En bref {#en_bref .backgroundStandard_bleu}
+
+:::{.enteteAvecTitre}
+Synthèse
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::: {.columns}
+
+::: {.column width="32%"}
+::: {style="text-align:center"}
+[κ = 0,614 → **0,825**]{style="font-size:1.6em;color:#2a78d6"}
+
+Accord avec l'expert<br/>(kappa de Cohen)
+:::
+:::
+
+::: {.column width="32%"}
+::: {style="text-align:center"}
+[19 % → **5,3 %**]{style="font-size:1.6em;color:#2a78d6"}
+
+Items renvoyés à l'humain<br/>pour 3,8 % d'erreur résiduelle
+:::
+:::
+
+::: {.column width="32%"}
+::: {style="text-align:center"}
+[2015 → **2021**]{style="font-size:1.6em;color:#2a78d6"}
+
+Le modèle appris sur 2015<br/>se transpose sans nouvelle annotation
+:::
+:::
+
+::::
+
+:::{.listeSansPuceNiveau1}
+- [**Lecture et codage séparés** : le modèle de vision transcrit, un algorithme aligne, un LLM code]{.puceListFleche}
+- [**Trois lecteurs**, chacun avec une image adaptée, puis **agrégation apprise** item par item]{.puceListFleche}
+- [**Un vrai signal de confiance** : le renvoi à l'humain devient ciblé]{.puceListFleche}
+:::
+
+::::
+
+# Le point de départ {#chapitre_depart .backgroundTitre_bleu}
+
+## L'état du dépôt au moment du fork {#depart_etat .backgroundStandard_bleu}
+
+:::{.enteteAvecTitre}
+Le point de départ
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+*Commit `f27d700`, 08/10/2026*
+
+:::{.listeSansPuceNiveau1}
+- [**Approche end-to-end** privilégiée : image + référence + grille → codes, en un seul appel]{.puceListFleche}
+- [**Deux étapes** disponible, mais avec un alignement confié au LLM]{.puceListFleche}
+- [**Meilleur résultat** : κ = **0,614** (qwen3-8-27b, prompt « comptage + exemples », 500 copies)]{.puceListFleche}
+- [**Pas de configuration universelle** : le meilleur prompt dépend du modèle]{.puceListFleche}
+- [**Pas de signal de confiance** : le score auto-déclaré a été retiré (D11), la courbe de renvoi humain n'existe pas]{.puceListFleche}
+- [Corpus **2015 uniquement**]{.puceListFleche}
+:::
+
+::::
+
+# Les nouveautés {#chapitre_nouveautes .backgroundTitre_vert}
+
+## Le pipeline, avant et après {#nouv_pipeline .backgroundStandard_vert}
+
+:::{.enteteAvecTitre}
+Les nouveautés
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+**Avant** : un modèle fait tout
+
+```{mermaid}
+%%| fig-width: 10
+flowchart LR
+    I["Image"] --> V["VLM<br/>lit + aligne + code"]
+    R["Référence + grille"] --> V
+    V --> C["83 codes"]
+```
+
+**Après** : chaque étape a son outil, chaque lecture est inspectable
+
+```{mermaid}
+%%| fig-width: 12
+flowchart LR
+    I["Image"] --> P["Préparation<br/>par lecteur"]
+    P --> L1["qwen3-8-27b"]
+    P --> L2["gemma4<br/>4 bandes"]
+    P --> L3["qwen3-6-35b"]
+    L1 & L2 & L3 --> A["Alignement<br/>Needleman-Wunsch"]
+    A --> K["Codage LLM<br/>×3"]
+    K --> G["Agrégation<br/>apprise"]
+    G --> S["Codes<br/>+ probabilités"]
+    style G fill:#2a78d6,color:#fff,stroke:#2a78d6
+```
+
+::::
+
+## ① Transcription à l'aveugle + alignement local {#nouv_alignement .backgroundStandard_vert}
+
+:::{.enteteAvecTitre}
+Les nouveautés
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::: {.columns}
+
+::: {.column width="50%"}
+**Passe 1 — lire sans la dictée**
+
+- Le lecteur ne voit pas le texte attendu : il n'est **pas tenté de corriger l'élève**
+- Règles ajoutées : rond sur le i = point, majuscule après un point
+- Une génération tronquée n'est **jamais** acceptée comme transcription
+:::
+
+::: {.column width="50%"}
+**Alignement — sans LLM**
+
+- Needleman-Wunsch entre mots lus et items
+- Gère absents, mots en trop, fusions (« nousles »), coupures (« re trouvé »)
+- Un mot oublié **ne décale plus** les suivants
+:::
+
+::::
+
+| Alignement | Résultat |
+|---|---|
+| Par le LLM | sauts en cascade, **biais +13,9 pt** (30 copies) |
+| **Needleman-Wunsch** | **83 items / 83** sur le texte de référence |
+
+: {.striped}
+
+::::
+
+## ② Une image préparée pour chaque lecteur {#nouv_image .backgroundStandard_vert}
+
+:::{.enteteAvecTitre}
+Les nouveautés
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::: {.columns}
+
+::: {.column width="40%"}
+- gemma ramène **toute image à ~256 tokens** → page entière vue à ~113 px/token
+- **Recadrage** dans le cadre pré-imprimé
+- **Découpe en 4 bandes** au creux des interlignes → 4 × plus de détail
+- Les qwen lisent déjà en pleine résolution : rien à gagner
+:::
+
+::: {.column width="60%"}
+```{ojs}
+//| echo: false
+image = [
+  {essai: "Page entière", kappa: 0.629},
+  {essai: "4 bandes", kappa: 0.709},
+  {essai: "Recadrage + 4 bandes", kappa: 0.722, retenu: true},
+  {essai: "Recadrage + 6 bandes", kappa: 0.713}
+]
+Plot.plot({
+  style, width: 620, height: 340, marginLeft: 190, marginRight: 60,
+  title: "gemma4 seul, kappa sur 50 copies",
+  x: {domain: [0, 0.8], label: null, grid: true, ticks: 4},
+  y: {label: null, domain: image.map(d => d.essai)},
+  marks: [
+    Plot.barX(image, {y: "essai", x: "kappa", rx2: 4,
+      fill: d => d.retenu ? c.bleu : c.gris, tip: {format: {kappa: k3, fill: false}}}),
+    Plot.text(image, {y: "essai", x: "kappa", text: d => k3(d.kappa), dx: 6,
+      textAnchor: "start", fill: c.encre}),
+    Plot.ruleX([0])
+  ]
+})
+```
+:::
+
+::::
+
+::::
+
+## ③ Vote à trois lecteurs, confiance = concordance {#nouv_vote .backgroundStandard_vert}
+
+:::{.enteteAvecTitre}
+Les nouveautés
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::: {.columns}
+
+::: {.column width="48%"}
+- **3 lecteurs** de familles différentes : erreurs moins corrélées
+- Chaque lecture est **codée séparément** → 3 codes par item
+- **Majorité** à 2 sur 3 ; le lecteur principal tranche si tous diffèrent (0,6 %)
+- **Confiance** = part des lecteurs d'accord (3/3, 2/3, 1/3)
+:::
+
+::: {.column width="52%"}
+```{ojs}
+//| echo: false
+conf = [
+  {accord: "3 sur 3", part: 0.811, justes: 0.953},
+  {accord: "2 sur 3", part: 0.184, justes: 0.669},
+  {accord: "Tous différents", part: 0.006, justes: 0.325}
+]
+Plot.plot({
+  style, width: 540, height: 300, marginLeft: 140, marginRight: 70,
+  title: "Codes justes selon l'accord des lecteurs",
+  subtitle: "Corpus 2015 complet",
+  x: {domain: [0, 1], tickFormat: "%", label: null, grid: true, ticks: 5},
+  y: {label: null, domain: conf.map(d => d.accord)},
+  marks: [
+    Plot.barX(conf, {y: "accord", x: "justes", fill: c.bleu, rx2: 4,
+      channels: {"Part des items": d => pct(d.part)},
+      tip: {format: {x: pct, y: true, fill: false}}}),
+    Plot.text(conf, {y: "accord", x: "justes", text: d => pct(d.justes), dx: 6,
+      textAnchor: "start", fill: c.encre}),
+    Plot.ruleX([0])
+  ]
+})
+```
+La confiance est **un bon signal** : 81 % des items sont unanimes, et justes à 95 %.
+:::
+
+::::
+
+::::
+
+## ④ Agrégation apprise {#nouv_agregation .backgroundStandard_vert}
+
+:::{.enteteAvecTitre}
+Les nouveautés
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+**Idée** : le vote traite tous les items pareil, or les erreurs des lecteurs **dépendent de l'item**
+(sur « n' », un 9 venu d'une lecture « m' » est presque toujours faux).
+
+:::: {.columns}
+
+::: {.column width="50%"}
+**Une logistique par item, qui prend en entrée**
+
+- les **3 codes** des lecteurs
+- le **contexte** : non-unanimité de la copie, items voisins
+- les **formes lues** : classe (« m' », vide, casse…), distance à l'attendu
+:::
+
+::: {.column width="50%"}
+**Ce qu'elle produit**
+
+- **P(1), P(9), P(0)** calibrées par item
+- Décision « **sans biais** » : taux de faute global exact
+- Aucun nouvel appel aux modèles
+- Validation croisée **par copie** (5 plis)
+:::
+
+::::
+
+::::
+
+## ⑤ Outillage {#nouv_outillage .backgroundStandard_vert}
+
+:::{.enteteAvecTitre}
+Les nouveautés
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::{.listeSansPuceNiveau1}
+- [**Corpus 2021** : chargement du format long, tirage aléatoire reproductible et emboîté (`data.sample_seed`)]{.puceListFleche}
+- [**Grille** : champ `formes_acceptees` (variante « À » sur l'item 73, en attente DEPP)]{.puceListFleche}
+- [**Diagnostic** : origine de chaque désaccord (lecture / alignement / codage), recombinaison de runs sans appel modèle]{.puceListFleche}
+- [**Export** des prédictions hors pli au format du site]{.puceListFleche}
+- [**Tests** : 8 nouveaux fichiers (alignement, ensemble, prétraitement, two-stage…)]{.puceListFleche}
+:::
+
+36 fichiers modifiés · **+5 465 lignes** · 30 commits
+
+::::
+
+# Les résultats {#chapitre_resultats .backgroundTitre_jaune}
+
+## Progression du kappa {#res_progression .backgroundStandard_jaune}
+
+:::{.enteteAvecTitre}
+Les résultats
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+```{ojs}
+//| echo: false
+etapes = [
+  {etape: "Fork : end-to-end (qwen3-8-27b)", kappa: 0.614, ech: "Échantillon (50 à 500 copies)"},
+  {etape: "Deux étapes + alignement (qwen3-8-27b)", kappa: 0.687, ech: "Échantillon (50 à 500 copies)"},
+  {etape: "gemma recadré 4 bandes seul", kappa: 0.722, ech: "Échantillon (50 à 500 copies)"},
+  {etape: "Vote à trois lecteurs", kappa: 0.739, ech: "Échantillon (50 à 500 copies)"},
+  {etape: "Vote à trois lecteurs ", kappa: 0.716, ech: "Corpus 2015 complet"},
+  {etape: "Agrégation apprise", kappa: 0.825, ech: "Corpus 2015 complet"}
+]
+Plot.plot({
+  style, width: 1050, height: 400, marginLeft: 330, marginRight: 70,
+  x: {domain: [0, 0.9], label: "Kappa de Cohen →", grid: true, ticks: 9},
+  y: {label: null, domain: etapes.map(d => d.etape)},
+  color: {domain: ["Échantillon (50 à 500 copies)", "Corpus 2015 complet"],
+          range: [c.gris, c.bleu], legend: true},
+  marks: [
+    Plot.barX(etapes, {y: "etape", x: "kappa", fill: "ech", rx2: 4,
+      tip: {format: {x: k3, y: true, fill: true}}}),
+    Plot.text(etapes, {y: "etape", x: "kappa", text: d => k3(d.kappa), dx: 6,
+      textAnchor: "start", fill: c.encre}),
+    Plot.ruleX([0])
+  ]
+})
+```
+
+- Sur échantillon, **+0,125** grâce à la lecture séparée, l'image adaptée et le vote
+- Sur le corpus complet (3 424 copies), l'agrégation apprise ajoute **+0,11** au vote
+
+::::
+
+## Diagnostic : tout se joue à la lecture {#res_diagnostic .backgroundStandard_jaune}
+
+:::{.enteteAvecTitre}
+Les résultats
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::: {.columns}
+
+::: {.column width="50%"}
+**Changer de codeur ne change rien**
+
+| Lecteur \\ Codeur | qwen3-6 | gemma4 | qwen3-8 |
+|---|:-:|:-:|:-:|
+| gemma 4 bandes | 0,715 | 0,715 | 0,716 |
+| qwen3-8-27b | 0,676 | 0,687 | 0,675 |
+| qwen3-6-35b | 0,663 | 0,664 | 0,658 |
+| **Vote** | **0,745** | **0,747** | **0,743** |
+
+: 99 copies {.striped}
+:::
+
+::: {.column width="50%"}
+**Erreurs systématiques de lecture**
+
+- Alignement en cause : **0 %** (fusion), 2 % (mot en trop)
+- Codage en cause : **0 %**
+- « n' » lu **« m' »** : 80 à 85 % des écarts (~2 900 lectures)
+- « S'ils » lu **« Ils »** : deux items tombent d'un coup
+- « A ce moment » lu **« À »** : accepté par l'expert, pas par la grille
+:::
+
+::::
+
+→ Le levier n'est pas le prompt de codage mais **ce que le modèle voit**.
+
+::::
+
+## L'agrégation corrige les confusions ciblées {#res_items .backgroundStandard_jaune}
+
+:::{.enteteAvecTitre}
+Les résultats
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+```{ojs}
+//| echo: false
+items = [
+  {item: "A (73)", vote: 0.48, appris: 0.93},
+  {item: "n' (35)", vote: 0.70, appris: 0.94},
+  {item: "ce (74)", vote: 0.69, appris: 0.81},
+  {item: "S' (33)", vote: 0.74, appris: 0.89},
+  {item: "n' (17)", vote: 0.79, appris: 0.96},
+  {item: "ils (34)", vote: 0.86, appris: 0.93},
+  {item: "Martine (59)", vote: 0.87, appris: 0.97}
+]
+itemsLong = items.flatMap(d => [
+  {item: d.item, methode: "Vote majoritaire", accord: d.vote},
+  {item: d.item, methode: "Agrégation apprise", accord: d.appris}
+])
+Plot.plot({
+  style, width: 1050, height: 380, marginLeft: 130, marginRight: 60,
+  title: "Accord avec l'expert sur les items les plus difficiles (corpus 2015)",
+  x: {domain: [0.4, 1], tickFormat: "%", label: null, grid: true},
+  y: {label: null, domain: items.map(d => d.item)},
+  color: {domain: ["Vote majoritaire", "Agrégation apprise"], range: [c.gris, c.bleu], legend: true},
+  marks: [
+    Plot.link(items, {y: "item", x1: "vote", x2: "appris", stroke: c.gris, strokeWidth: 2}),
+    Plot.dot(itemsLong, {y: "item", x: "accord", fill: "methode", r: 7,
+      stroke: "white", strokeWidth: 2, tip: {format: {x: pct, y: true, fill: true}}}),
+    Plot.text(items, {y: "item", x: "appris", text: d => pct(d.appris), dx: 14,
+      textAnchor: "start", fill: c.encre})
+  ]
+})
+```
+
+Les **formes lues** (« m' », vide, « À »…) permettent au modèle de reconnaître les erreurs typiques de chaque lecteur.
+
+::::
+
+## Un renvoi à l'humain 3,6 fois moins coûteux {#res_renvoi .backgroundStandard_jaune}
+
+:::{.enteteAvecTitre}
+Les résultats
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::: {.columns}
+
+::: {.column width="60%"}
+```{ojs}
+//| echo: false
+renvoi = [
+  {methode: "Vote majoritaire", renvoi: 0.19},
+  {methode: "Table 3 codes × item", renvoi: 0.085},
+  {methode: "Logistique + contexte", renvoi: 0.078},
+  {methode: "Logistique + formes lues", renvoi: 0.053, retenu: true}
+]
+Plot.plot({
+  style, width: 640, height: 340, marginLeft: 210, marginRight: 60,
+  title: "Part des items à renvoyer pour 3,8 % d'erreur résiduelle",
+  x: {domain: [0, 0.2], tickFormat: "%", label: null, grid: true, ticks: 4},
+  y: {label: null, domain: renvoi.map(d => d.methode)},
+  marks: [
+    Plot.barX(renvoi, {y: "methode", x: "renvoi", rx2: 4,
+      fill: d => d.retenu ? c.bleu : c.gris, tip: {format: {x: pct, fill: false}}}),
+    Plot.text(renvoi, {y: "methode", x: "renvoi", text: d => pct(d.renvoi), dx: 6,
+      textAnchor: "start", fill: c.encre}),
+    Plot.ruleX([0])
+  ]
+})
+```
+:::
+
+::: {.column width="40%"}
+| | Vote | Appris |
+|---|:-:|:-:|
+| Kappa | 0,715 | **0,825** |
+| Fautes inventées | 6,3 % | **2,7 %** |
+| Fautes ratées | 19,6 % | **15,6 %** |
+| Erreur à 19 % de renvoi | 3,80 % | **1,49 %** |
+
+: Corpus 2015 complet {.striped}
+
+- Probabilités **calibrées** (ECE 0,5 %)
+- Taux de faute estimé 19,65 % pour **19,64 %** réel
+:::
+
+::::
+
+::::
+
+## Transposition à 2021 : sans nouvelle annotation {#res_2021 .backgroundStandard_jaune}
+
+:::{.enteteAvecTitre}
+Les résultats
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::: {.columns}
+
+::: {.column width="62%"}
+```{ojs}
+//| echo: false
+t21 = [
+  {n: "100 copies 2021", methode: "Vote", kappa: 0.746},
+  {n: "100 copies 2021", methode: "Appris sur 2021", kappa: 0.778},
+  {n: "100 copies 2021", methode: "Appris sur 2015", kappa: 0.823},
+  {n: "100 copies 2021", methode: "2015 + 2021", kappa: 0.824},
+  {n: "200 copies 2021", methode: "Vote", kappa: 0.751},
+  {n: "200 copies 2021", methode: "Appris sur 2021", kappa: 0.796},
+  {n: "200 copies 2021", methode: "Appris sur 2015", kappa: 0.831},
+  {n: "200 copies 2021", methode: "2015 + 2021", kappa: 0.833}
+]
+meth = ["Vote", "Appris sur 2021", "Appris sur 2015", "2015 + 2021"]
+Plot.plot({
+  style, width: 660, height: 380, marginBottom: 40,
+  title: "Kappa sur les copies 2021 de test",
+  subtitle: "Copies 2021 annotées utilisées pour l'apprentissage",
+  fx: {label: null, padding: 0.12},
+  x: {domain: meth, axis: null},
+  y: {domain: [0, 0.9], label: "Kappa", grid: true, ticks: 5},
+  color: {domain: meth, range: [c.bleu, c.orange, c.aqua, c.jaune], legend: true},
+  marks: [
+    Plot.barY(t21, {fx: "n", x: "methode", y: "kappa", fill: "methode", ry1: 0, ry2: 4,
+      insetLeft: 1, insetRight: 1, tip: {format: {y: k3, fx: true, x: false}}}),
+    Plot.text(t21, {fx: "n", x: "methode", y: "kappa", text: d => d3.format(".2f")(d.kappa),
+      dy: -10, fill: c.encre, fontSize: 14}),
+    Plot.ruleY([0])
+  ]
+})
+```
+:::
+
+::: {.column width="38%"}
+- Même texte, mêmes 83 items, run de 1 000 copies 2021
+- **Le modèle 2015 garde +0,08** sur le vote
+- 100 à 200 copies 2021 seules **ne suffisent pas**
+- Évolution du taux de faute 2015 → 2021 :<br/>expert **+2,6 pt**, vote +1,8, modèle 2015 **+2,2**
+
+*Résultats intermédiaires (485 copies)*
+:::
+
+::::
+
+::::
+
+## Ce qui n'a pas marché {#res_echecs .backgroundStandard_jaune}
+
+:::{.enteteAvecTitre}
+Les résultats
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+| Essai | Effet |
+|---|---|
+| Passe 1 épelée + passe 2 à choix fermé | remplacée par l'alignement |
+| Alignement par le LLM | biais +13,9 pt |
+| Agrandir l'image pour les qwen | aucun gain |
+| Épaissir le trait de 1 px | vote 0,747 → **0,686** |
+| Relecture en zoom des items discordants | moins juste que le vote |
+| Règles n' / m' dans la consigne | aucun effet, gemma −0,022 |
+| Décision sans biais étendue au code 0 | aucun effet |
+
+: {.striped}
+
+→ La consigne ne corrige pas une confusion visuelle.
+
+::::
+
+## Limites et suite {#res_suite .backgroundStandard_jaune}
+
+:::{.enteteAvecTitre}
+Les résultats
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::: {.columns}
+
+::: {.column width="50%"}
+**Limites**
+
+- **Plancher de sur-correction** : 6,5 % des fautes sont lues « correctes » par les 3 lecteurs (42 % des fautes encore ratées)
+- **Oublis de ponctuation** moins bien vus que par le vote (28 % contre 8 %)
+- Une seule correction experte : l'accord inter-humains reste inconnu
+- Scans binarisés (1 bit) : accents et jambages dégradés
+:::
+
+::: {.column width="50%"}
+**Suite**
+
+- Valider avec la DEPP « À » sur l'item 73 (+0,005 de κ)
+- Demander des **scans en niveaux de gris**
+- Variables propres à la ponctuation
+- **2025** : réutiliser le modèle 2015 + 2021, contrôler sur un petit échantillon annoté
+:::
+
+::::
+
+::::
+
+## {#pageDeFin data-menu-title="Page finale" .unnumbered .backgroundPageFinale}
